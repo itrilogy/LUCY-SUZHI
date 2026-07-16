@@ -4,7 +4,6 @@ import re
 import traceback
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from sklearn.metrics.pairwise import cosine_similarity
 from typing import List, Union, Dict, Optional
 
 from .collaborative_storm_utils import trim_output_after_hint
@@ -155,7 +154,10 @@ class InsertInformationModule(dspy.Module):
     ):
         if encoded_outline is not None and encoded_outline.size > 0:
             encoded_query = self.encoder.encode(f"{question}, {query}")
-            sim = cosine_similarity([encoded_query], encoded_outline)[0]
+            # 内置余弦相似度，避免依赖 sklearn/scipy
+            q_norm = encoded_query / (np.linalg.norm(encoded_query) + 1e-10)
+            o_norm = encoded_outline / (np.linalg.norm(encoded_outline, axis=-1, keepdims=True) + 1e-10)
+            sim = np.dot(o_norm, q_norm)
             sorted_indices = np.argsort(sim)
             sorted_outlines = np.array(outlines)[sorted_indices[::-1]]
             return sorted_outlines

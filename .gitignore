@@ -25,3 +25,7 @@ secrets.toml
 */assertion.log
 *results/
 .venv/
+.reasonix/
+reasonix.toml
+frontend/demo_light/DEMO_WORKING_DIR/
+results_deepseek/

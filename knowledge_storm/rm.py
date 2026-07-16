@@ -648,6 +648,9 @@ class SearXNG(dspy.Retrieve):
         searxng_api_key=None,
         k=3,
         is_valid_source: Callable = None,
+        engines_academic=None,
+        engines_chinese=None,
+        engines_general=None,
     ):
         """Initialize the SearXNG search retriever.
         Please set up SearXNG according to https://docs.searxng.org/index.html.
@@ -658,6 +661,9 @@ class SearXNG(dspy.Retrieve):
             k (int, optional): The number of top passages to retrieve. Defaults to 3.
             is_valid_source (Callable, optional): A function that takes a URL and returns a boolean indicating if the
             source is valid. Defaults to None.
+            engines_academic (str, optional): Comma-separated engines for academic searches.
+            engines_chinese (str, optional): Comma-separated engines for Chinese-language searches.
+            engines_general (str, optional): Comma-separated engines for general searches.
         """
         super().__init__(k=k)
         if not searxng_api_url:
@@ -665,6 +671,9 @@ class SearXNG(dspy.Retrieve):
         self.searxng_api_url = searxng_api_url
         self.searxng_api_key = searxng_api_key
         self.usage = 0
+        self.engines_academic = engines_academic or ""
+        self.engines_chinese = engines_chinese or ""
+        self.engines_general = engines_general or ""
 
         if is_valid_source:
             self.is_valid_source = is_valid_source
@@ -680,6 +689,11 @@ class SearXNG(dspy.Retrieve):
         self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
     ):
         """Search with SearxNG for self.k top passages for query or queries
+
+        Uses Paper-Arts' three-track routing strategy:
+          - 中文查询 → 中文组引擎
+          - 英文查询 → 学术组引擎 + 通用组
+          - 自定义分组通过 engines_academic/chinese/general 参数配置
 
         Args:
             query_or_queries (Union[str, List[str]]): The query or queries to search for.
@@ -703,13 +717,32 @@ class SearXNG(dspy.Retrieve):
 
         for query in queries:
             try:
-                params = {"q": query, "format": "json"}
+                params = {"q": query, "format": "json", "language": "zh-CN"}
+                # 三轨路由: 根据查询语言/特征选择引擎组
+                if any('\u4e00' <= c <= '\u9fff' for c in query):
+                    # 含中文字符 → 中文组
+                    if self.engines_chinese:
+                        params["engines"] = self.engines_chinese
+                elif self.engines_academic:
+                    # 英文查询 → 学术组优先
+                    params["engines"] = self.engines_academic
+
                 response = requests.get(
-                    self.searxng_api_url, headers=headers, params=params
+                    self.searxng_api_url, headers=headers, params=params, timeout=15
                 )
                 results = response.json()
 
-                for r in results["results"]:
+                # 若学术组结果不足且通用组可用，降级到通用组
+                if self.engines_academic and (self.engines_academic in params.get("engines", "")):
+                    result_count = len(results.get("results", []))
+                    if result_count < 3 and self.engines_general:
+                        params["engines"] = self.engines_general
+                        response = requests.get(
+                            self.searxng_api_url, headers=headers, params=params, timeout=15
+                        )
+                        results = response.json()
+
+                for r in results.get("results", []):
                     if self.is_valid_source(r["url"]) and r["url"] not in exclude_urls:
                         collected_results.append(
                             {

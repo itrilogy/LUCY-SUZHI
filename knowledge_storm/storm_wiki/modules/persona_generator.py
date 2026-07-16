@@ -5,12 +5,13 @@ from typing import Union, List
 import dspy
 import requests
 from bs4 import BeautifulSoup
+from .storm_dataclass import Persona
 
 
 def get_wiki_page_title_and_toc(url):
     """Get the main title and table of contents from an url of a Wikipedia page."""
 
-    response = requests.get(url)
+    response = requests.get(url, timeout=5)
     soup = BeautifulSoup(response.content, "html.parser")
 
     # Get the main title from the first h1 tag
@@ -56,6 +57,7 @@ class FindRelatedTopic(dspy.Signature):
 class GenPersona(dspy.Signature):
     """You need to select a group of Wikipedia editors who will work together to create a comprehensive article on the topic. Each of them represents a different perspective, role, or affiliation related to this topic. You can use other Wikipedia pages of related topics for inspiration. For each editor, add a description of what they will focus on.
     Give your answer in the following format: 1. short summary of editor 1: description\n2. short summary of editor 2: description\n...
+    IMPORTANT: If the topic is in Chinese, respond entirely in Chinese. The editor names and descriptions must match the topic's language.
     """
 
     topic = dspy.InputField(prefix="Topic of interest:", format=str)
@@ -82,14 +84,26 @@ class CreateWriterWithPersona(dspy.Module):
             for s in related_topics.split("\n"):
                 if "http" in s:
                     urls.append(s[s.find("http") :])
+            # 替换 Wikipedia 域名为可访问的反代站点
+            urls = [u.replace("en.wikipedia.org", "en.wiki.nunch.uk")
+                      .replace("zh.wikipedia.org", "zh.wiki.nunch.uk")
+                      .replace("wikipedia.org", "en.wiki.nunch.uk") for u in urls]
             examples = []
-            for url in urls:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                futures = {ex.submit(get_wiki_page_title_and_toc, url): url for url in urls[:5]}
                 try:
-                    title, toc = get_wiki_page_title_and_toc(url)
-                    examples.append(f"Title: {title}\nTable of Contents: {toc}")
-                except Exception as e:
-                    logging.error(f"Error occurs when processing {url}: {e}")
-                    continue
+                    for f in as_completed(futures, timeout=60):
+                        try:
+                            title, toc = f.result()
+                            if toc:
+                                examples.append(f"Title: {title}\nTable of Contents: {toc}")
+                        except Exception as e:
+                            logging.error(f"Error when processing {futures[f]}: {e}")
+                            continue
+                except TimeoutError:
+                    logging.warning("Wikipedia fetch timed out, using partial results")
+                    # 超时时已完成的结果仍然可用
             if len(examples) == 0:
                 examples.append("N/A")
             gen_persona_output = self.gen_persona(
@@ -100,13 +114,11 @@ class CreateWriterWithPersona(dspy.Module):
         for s in gen_persona_output.split("\n"):
             match = re.search(r"\d+\.\s*(.*)", s)
             if match:
-                personas.append(match.group(1))
-
-        sorted_personas = personas
+                personas.append(Persona.from_perspective(match.group(1)))
 
         return dspy.Prediction(
             personas=personas,
-            raw_personas_output=sorted_personas,
+            raw_personas_output=personas,
             related_topics=related_topics,
         )
 
@@ -131,24 +143,11 @@ class StormPersonaGenerator:
     def __init__(self, engine: Union[dspy.dsp.LM, dspy.dsp.HFModel]):
         self.create_writer_with_persona = CreateWriterWithPersona(engine=engine)
 
-    def generate_persona(self, topic: str, max_num_persona: int = 3) -> List[str]:
-        """
-        Generates a list of personas based on the provided topic, up to a maximum number specified.
-
-        This method first creates personas using the underlying `create_writer_with_persona` instance
-        and then prepends a default 'Basic fact writer' persona to the list before returning it.
-        The number of personas returned is limited to `max_num_persona`, excluding the default persona.
-
-        Args:
-            topic (str): The topic for which personas are to be generated.
-            max_num_persona (int): The maximum number of personas to generate, excluding the
-                default 'Basic fact writer' persona.
-
-        Returns:
-            List[str]: A list of persona descriptions, including the default 'Basic fact writer' persona
-                and up to `max_num_persona` additional personas generated based on the topic.
-        """
+    def generate_persona(self, topic: str, max_num_persona: int = 3) -> List[Persona]:
         personas = self.create_writer_with_persona(topic=topic)
-        default_persona = "Basic fact writer: Basic fact writer focusing on broadly covering the basic facts about the topic."
+        default_persona = Persona(
+            name="Basic fact writer",
+            description="Basic fact writer focusing on broadly covering the basic facts about the topic."
+        )
         considered_personas = [default_persona] + personas.personas[:max_num_persona]
         return considered_personas

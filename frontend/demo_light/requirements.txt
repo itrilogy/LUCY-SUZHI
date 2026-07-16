@@ -1,5 +1,4 @@
 streamlit==1.31.1
-streamlit-card
 markdown
 unidecode
 extra-streamlit-components==0.1.60

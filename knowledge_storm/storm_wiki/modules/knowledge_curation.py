@@ -9,6 +9,11 @@ import dspy
 from .callback import BaseCallbackHandler
 from .persona_generator import StormPersonaGenerator
 from .storm_dataclass import DialogueTurn, StormInformationTable
+from .fact_pool import (
+    FactPool,
+    extract_facts_from_information,
+    extract_facts_from_dialogue_turn as extract_facts_from_turn,
+)
 from ...interface import KnowledgeCurationModule, Retriever, Information
 from ...utils import ArticleTextProcessing
 
@@ -50,14 +55,16 @@ class ConvSimulator(dspy.Module):
         persona: str,
         ground_truth_url: str,
         callback_handler: BaseCallbackHandler,
+        fact_pool: Optional[FactPool] = None,
     ):
         """
         topic: The topic to research.
         persona: The persona of the Wikipedia writer.
         ground_truth_url: The ground_truth_url will be excluded from search to avoid ground truth leakage in evaluation.
+        fact_pool: Optional FactPool to accumulate facts into. If provided, facts will be extracted from each turn.
         """
         dlg_history: List[DialogueTurn] = []
-        for _ in range(self.max_turn):
+        for turn_idx in range(self.max_turn):
             user_utterance = self.wiki_writer(
                 topic=topic, persona=persona, dialogue_turns=dlg_history
             ).question
@@ -77,6 +84,18 @@ class ConvSimulator(dspy.Module):
             )
             dlg_history.append(dlg_turn)
             callback_handler.on_dialogue_turn_end(dlg_turn=dlg_turn)
+
+            # Phase 1.1: 从对话轮次中提取事实到 FactPool
+            if fact_pool is not None and expert_output.searched_results:
+                for info in expert_output.searched_results:
+                    facts = extract_facts_from_information(
+                        info,
+                        perspective=persona or None,
+                        turn_id=turn_idx,
+                        existing_pool=fact_pool,
+                    )
+                    for fact in facts:
+                        fact_pool.add_fact(fact)
 
         return dspy.Prediction(dlg_history=dlg_history)
 
@@ -278,7 +297,7 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
             max_turn=max_conv_turn,
         )
 
-    def _get_considered_personas(self, topic: str, max_num_persona) -> List[str]:
+    def _get_considered_personas(self, topic: str, max_num_persona) -> list:
         return self.persona_generator.generate_persona(
             topic=topic, max_num_persona=max_num_persona
         )
@@ -290,6 +309,7 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
         ground_truth_url,
         considered_personas,
         callback_handler: BaseCallbackHandler,
+        fact_pool: Optional[FactPool] = None,
     ) -> List[Tuple[str, List[DialogueTurn]]]:
         """
         Executes multiple conversation simulations concurrently, each with a different persona,
@@ -306,6 +326,7 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
                 will be conducted. Each persona is passed to `conv_simulator` individually.
             callback_handler (callable): A callback function that is passed to `conv_simulator`. It
                 should handle any callbacks or events during the simulation.
+            fact_pool (FactPool, optional): If provided, facts will be extracted into this pool.
 
         Returns:
             list of tuples: A list where each tuple contains a persona and its corresponding cleaned
@@ -314,17 +335,20 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
 
         conversations = []
 
-        def run_conv(persona):
+        def run_conv(p):
             return conv_simulator(
                 topic=topic,
                 ground_truth_url=ground_truth_url,
-                persona=persona,
+                persona=p.to_perspective(),
                 callback_handler=callback_handler,
+                fact_pool=fact_pool,
             )
 
         max_workers = min(self.max_thread_num, len(considered_personas))
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+        ) as executor:
             future_to_persona = {
                 executor.submit(run_conv, persona): persona
                 for persona in considered_personas
@@ -352,15 +376,18 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
         max_perspective: int = 0,
         disable_perspective: bool = True,
         return_conversation_log=False,
+        build_fact_pool: bool = False,
     ) -> Union[StormInformationTable, Tuple[StormInformationTable, Dict]]:
         """
         Curate information and knowledge for the given topic
 
         Args:
             topic: topic of interest in natural language.
+            build_fact_pool: If True, build and return a FactPool alongside the InformationTable.
 
         Returns:
             collected_information: collected information in InformationTable type.
+            If build_fact_pool=True, returns (information_table, fact_pool, conversation_log).
         """
 
         # identify personas
@@ -374,6 +401,9 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
             )
         callback_handler.on_identify_perspective_end(perspectives=considered_personas)
 
+        # Phase 1.1: 构建 FactPool
+        fact_pool = FactPool(topic=topic) if build_fact_pool else None
+
         # run conversation
         callback_handler.on_information_gathering_start()
         conversations = self._run_conversation(
@@ -382,12 +412,21 @@ class StormKnowledgeCurationModule(KnowledgeCurationModule):
             ground_truth_url=ground_truth_url,
             considered_personas=considered_personas,
             callback_handler=callback_handler,
+            fact_pool=fact_pool,
         )
 
         information_table = StormInformationTable(conversations)
         callback_handler.on_information_gathering_end()
+
+        # 将 FactPool 元数据合并回 InformationTable
+        if fact_pool:
+            information_table.enrich_with_fact_pool(fact_pool)
+
         if return_conversation_log:
-            return information_table, StormInformationTable.construct_log_dict(
-                conversations
-            )
+            log = StormInformationTable.construct_log_dict(conversations)
+            if build_fact_pool:
+                return information_table, fact_pool, log
+            return information_table, log
+        if build_fact_pool:
+            return information_table, fact_pool
         return information_table

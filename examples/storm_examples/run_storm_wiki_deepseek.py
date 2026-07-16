@@ -59,6 +59,22 @@ def sanitize_topic(topic):
 
 
 def main(args):
+    # ── 配置自动检测 ──
+    # 如果 secrets.toml 不存在且 ~/.storm/config.toml 存在，自动导出配置
+    if not os.path.exists("secrets.toml"):
+        home_config = os.path.expanduser("~/.storm/config.toml")
+        if os.path.exists(home_config):
+            try:
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from cli.config_manager import StormConfig
+                sc = StormConfig()
+                sc.export_secrets_toml("secrets.toml")
+                print(f"[配置] 已从 {home_config} 自动生成 secrets.toml")
+            except ImportError:
+                print("[配置] 未找到 config_manager，使用环境变量或secrets.toml")
+            except Exception as e:
+                print(f"[配置] 配置自动导出失败: {e}")
+
     load_api_key(toml_file_path="secrets.toml")
     lm_configs = STORMWikiLMConfigs()
 

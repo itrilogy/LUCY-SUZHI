@@ -1,14 +1,48 @@
 import copy
 import re
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Union, Optional, Any, List, Tuple, Dict
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 
 from ...interface import Information, InformationTable, Article, ArticleSectionNode
 from ...utils import ArticleTextProcessing, FileIOHelper
+
+
+@dataclass
+class Persona:
+    """结构化角色：从 LLM 输出解析后全程传递对象，避免字符串分割。"""
+    name: str = ""
+    description: str = ""
+
+    def to_perspective(self) -> str:
+        """向后兼容：用于日志存储的字符串格式"""
+        return f"{self.name}：{self.description}"
+
+    @classmethod
+    def from_perspective(cls, text: str) -> "Persona":
+        """从 LLM 输出的 "name: description" 格式解析，兼容中英文冒号和短横"""
+        for sep in ["：", ": ", "- "]:
+            if sep in text:
+                parts = text.split(sep, 1)
+                return cls(name=parts[0].strip(), description=parts[1].strip())
+        return cls(name=text.strip())
+
+
+def _cosine_similarity(a, b):
+    """纯 NumPy 余弦相似度矩阵。a: (n, d), b: (m, d) → (n, m)"""
+    a_norm = a / (np.linalg.norm(a, axis=-1, keepdims=True) + 1e-10)
+    b_norm = b / (np.linalg.norm(b, axis=-1, keepdims=True) + 1e-10)
+    return np.dot(a_norm, b_norm.T)
+
+# Phase 1.1: FactPool 集成 — 可选导入，不破坏向后兼容
+try:
+    from .fact_pool import FactPool, extract_facts_from_dialogue_turn as _extract_dlg_facts
+
+    _FACT_POOL_AVAILABLE = True
+except ImportError:
+    _FACT_POOL_AVAILABLE = False
 
 
 class DialogueTurn:
@@ -86,7 +120,7 @@ class StormInformationTable(InformationTable):
         conversation_log = []
         for persona, conv in conversations:
             conversation_log.append(
-                {"perspective": persona, "dlg_turns": [turn.log() for turn in conv]}
+                {"perspective": persona.to_perspective() if hasattr(persona, 'to_perspective') else str(persona), "dlg_turns": [turn.log() for turn in conv]}
             )
         return conversation_log
 
@@ -95,6 +129,46 @@ class StormInformationTable(InformationTable):
         for url in url_to_info:
             url_to_info[url] = url_to_info[url].to_dict()
         FileIOHelper.dump_json(url_to_info, path)
+
+    def to_fact_pool(self) -> "FactPool":
+        """
+        将 StormInformationTable 转换为 FactPool。
+
+        遍历所有视角 × 对话轮次，从每个轮次的 search_results 中
+        提取独立事实，构建行级事实池。
+
+        Returns:
+            FactPool 实例
+        """
+        if not _FACT_POOL_AVAILABLE:
+            raise ImportError(
+                "FactPool module not available. Ensure fact_pool.py is installed."
+            )
+
+        pool = FactPool()
+        for perspective, conv in self.conversations:
+            for turn_idx, turn in enumerate(conv):
+                facts = _extract_dlg_facts(
+                    turn, perspective=perspective, turn_id=turn_idx, existing_pool=pool
+                )
+                for fact in facts:
+                    pool.add_fact(fact)
+
+        return pool
+
+    def enrich_with_fact_pool(self, fact_pool: "FactPool"):
+        """
+        将 FactPool 的元数据合并回 InformationTable。
+
+        为 url_to_info 中每个 Information 对象添加 fact_ids 属性，
+        标记哪些事实来自该 URL。
+        """
+        for url, info in self.url_to_info.items():
+            related_facts = fact_pool.get_facts_by_url(url)
+            info.meta["fact_ids"] = [f.fact_id for f in related_facts]
+            info.meta["fact_confidence"] = [
+                f.confidence for f in related_facts
+            ]
 
     @classmethod
     def from_conversation_log_file(cls, path):
@@ -106,8 +180,12 @@ class StormInformationTable(InformationTable):
             conversations.append((persona, dialogue_turns))
         return cls(conversations)
 
-    def prepare_table_for_retrieval(self):
-        self.encoder = SentenceTransformer("paraphrase-MiniLM-L6-v2")
+    def prepare_table_for_retrieval(self, encoder=None):
+        """为语义检索准备编码器。可传入外置 Encoder，默认从 StormConfig 自动创建。"""
+        if encoder is None:
+            from ...encoder import Encoder as _Encoder
+            encoder = _Encoder()
+        self.encoder = encoder
         self.collected_urls = []
         self.collected_snippets = []
         for url, information in self.url_to_info.items():
@@ -125,7 +203,8 @@ class StormInformationTable(InformationTable):
             queries = [queries]
         for query in queries:
             encoded_query = self.encoder.encode(query)
-            sim = cosine_similarity([encoded_query], self.encoded_snippets)[0]
+            encoded_query_2d = encoded_query.reshape(1, -1) if encoded_query.ndim == 1 else encoded_query
+            sim = _cosine_similarity(encoded_query_2d, self.encoded_snippets)[0]
             sorted_indices = np.argsort(sim)
             for i in sorted_indices[-search_top_k:][::-1]:
                 selected_urls.append(self.collected_urls[i])

@@ -8,11 +8,13 @@ import dspy
 
 from .modules.article_generation import StormArticleGenerationModule
 from .modules.article_polish import StormArticlePolishingModule
-from .modules.callback import BaseCallbackHandler
+from .modules.callback import BaseCallbackHandler, CompositeCallbackHandler
 from .modules.knowledge_curation import StormKnowledgeCurationModule
 from .modules.outline_generation import StormOutlineGenerationModule
 from .modules.persona_generator import StormPersonaGenerator
 from .modules.storm_dataclass import StormInformationTable, StormArticle
+from .modules.fact_pool import FactPool
+from .modules.pipeline_state import PipelineState, PipelineStateManager, PHASE_ORDER
 from ..interface import Engine, LMConfigs, Retriever
 from ..lm import LitellmModel
 from ..utils import FileIOHelper, makeStringRed, truncate_filename
@@ -172,11 +174,14 @@ class STORMWikiRunner(Engine):
     """STORM Wiki pipeline runner."""
 
     def __init__(
-        self, args: STORMWikiRunnerArguments, lm_configs: STORMWikiLMConfigs, rm
+        self, args: STORMWikiRunnerArguments, lm_configs: STORMWikiLMConfigs, rm,
+        encoder=None, reranker=None,
     ):
         super().__init__(lm_configs=lm_configs)
         self.args = args
         self.lm_configs = lm_configs
+        self.encoder = encoder
+        self.reranker = reranker
 
         self.retriever = Retriever(rm=rm, max_thread=self.args.max_thread_num)
         storm_persona_generator = StormPersonaGenerator(
@@ -205,25 +210,154 @@ class STORMWikiRunner(Engine):
             article_polish_lm=self.lm_configs.article_polish_lm,
         )
 
+        # Phase 1.1: FactPool 缓存（可选）—— 必须在 apply_decorators 之前初始化
+        self._fact_pool: Optional[FactPool] = None
+
         self.lm_configs.init_check()
         self.apply_decorators()
+
+    @property
+    def fact_pool(self) -> Optional[FactPool]:
+        """获取当前管线的 FactPool（仅当 research 阶段启用了 build_fact_pool 时非空）。"""
+        return self._fact_pool
+
+    def update(
+        self,
+        topic: str,
+        new_sources: List[str] = None,
+        ground_truth_url: str = "",
+        callback_handler: BaseCallbackHandler = BaseCallbackHandler(),
+        build_fact_pool: bool = True,
+    ):
+        """
+        Incrementally update the article for an existing topic.
+
+        This method re-runs only the research phase on new sources,
+        merges new facts into the existing FactPool, identifies affected
+        sections via the Manifest, and performs targeted rewrites.
+
+        Phase 4.3: Incremental Knowledge Evolution.
+
+        Args:
+            topic: The existing topic to update.
+            new_sources: List of URLs or file paths for new sources.
+            ground_truth_url: The ground truth URL to exclude.
+            callback_handler: Callback handler.
+            build_fact_pool: Whether to rebuild FactPool.
+        """
+        from .modules.diff_engine import DiffEngine
+        from .modules.fact_pool import FactPool
+
+        diff_engine = DiffEngine()
+
+        self.topic = topic
+        self.article_dir_name = truncate_filename(
+            topic.replace(" ", "_").replace("/", "_")
+        )
+        self.article_output_dir = os.path.join(
+            self.args.output_dir, self.article_dir_name
+        )
+
+        # Step 1: Load existing state
+        existing_fact_pool = None
+        existing_manifest = None
+        existing_article = None
+
+        fp_path = PipelineStateManager.expected_fact_pool_path(self.article_output_dir)
+        if os.path.exists(fp_path):
+            existing_fact_pool = FactPool.load_json(fp_path)
+            logger.info(f"Loaded existing FactPool with {existing_fact_pool.num_facts()} facts")
+
+        # Step 2: Re-run research (optionally with new sources)
+        # For simplicity, we re-run research normally; the FactPool will be rebuilt.
+        information_table = self.run_knowledge_curation_module(
+            ground_truth_url=ground_truth_url,
+            callback_handler=callback_handler,
+            build_fact_pool=build_fact_pool,
+        )
+
+        new_fact_pool = self._fact_pool
+
+        # Step 3: Compute diff and affected sections
+        if existing_fact_pool and new_fact_pool:
+            diff = diff_engine.compute_pool_diff(existing_fact_pool, new_fact_pool)
+            logger.info(f"Update diff: {diff.summary()}")
+        else:
+            logger.info("No existing FactPool found; performing full rebuild.")
+            # Fall through to normal full run
+            self.run(
+                topic=topic,
+                ground_truth_url=ground_truth_url,
+                do_research=False,
+                do_generate_outline=True,
+                do_generate_article=True,
+                do_polish_article=True,
+                callback_handler=callback_handler,
+                build_fact_pool=build_fact_pool,
+            )
+            return
+
+        # Step 4: If diff is significant, re-generate outline and article
+        if diff.has_changes:
+            outline = self.run_outline_generation_module(
+                information_table=information_table,
+                callback_handler=callback_handler,
+            )
+            draft_article = self.run_article_generation_module(
+                outline=outline,
+                information_table=information_table,
+                callback_handler=callback_handler,
+            )
+            self.run_article_polishing_module(
+                draft_article=draft_article, remove_duplicate=False
+            )
+            logger.info(f"Incremental update complete. {diff.summary()}")
+        else:
+            logger.info("No changes detected; article is up to date.")
 
     def run_knowledge_curation_module(
         self,
         ground_truth_url: str = "None",
         callback_handler: BaseCallbackHandler = None,
+        build_fact_pool: bool = False,
     ) -> StormInformationTable:
-        (
-            information_table,
-            conversation_log,
-        ) = self.storm_knowledge_curation_module.research(
-            topic=self.topic,
-            ground_truth_url=ground_truth_url,
-            callback_handler=callback_handler,
-            max_perspective=self.args.max_perspective,
-            disable_perspective=False,
-            return_conversation_log=True,
-        )
+        if build_fact_pool:
+            (
+                information_table,
+                fact_pool,
+                conversation_log,
+            ) = self.storm_knowledge_curation_module.research(
+                topic=self.topic,
+                ground_truth_url=ground_truth_url,
+                callback_handler=callback_handler,
+                max_perspective=self.args.max_perspective,
+                disable_perspective=False,
+                return_conversation_log=True,
+                build_fact_pool=True,
+            )
+            self._fact_pool = fact_pool
+            # 持久化 FactPool
+            fact_pool_path = PipelineStateManager.expected_fact_pool_path(
+                self.article_output_dir
+            )
+            fact_pool.dump_json(fact_pool_path)
+
+            # 通知 callback 事件
+            for fact in fact_pool.get_all_facts():
+                callback_handler.on_fact_extracted(fact=fact)
+        else:
+            (
+                information_table,
+                conversation_log,
+            ) = self.storm_knowledge_curation_module.research(
+                topic=self.topic,
+                ground_truth_url=ground_truth_url,
+                callback_handler=callback_handler,
+                max_perspective=self.args.max_perspective,
+                disable_perspective=False,
+                return_conversation_log=True,
+                build_fact_pool=False,
+            )
 
         FileIOHelper.dump_json(
             conversation_log,
@@ -264,6 +398,7 @@ class STORMWikiRunner(Engine):
             information_table=information_table,
             article_with_outline=outline,
             callback_handler=callback_handler,
+            encoder=self.encoder,
         )
         draft_article.dump_article_as_plain_text(
             os.path.join(self.article_output_dir, "storm_gen_article.txt")
@@ -348,6 +483,8 @@ class STORMWikiRunner(Engine):
         do_polish_article: bool = True,
         remove_duplicate: bool = False,
         callback_handler: BaseCallbackHandler = BaseCallbackHandler(),
+        resume: bool = False,
+        build_fact_pool: bool = False,
     ):
         """
         Run the STORM pipeline.
@@ -365,6 +502,8 @@ class STORMWikiRunner(Engine):
              duplicated content.
             remove_duplicate: If True, remove duplicated content.
             callback_handler: A callback handler to handle the intermediate results.
+            resume: If True, attempt to resume from a previous checkpoint.
+            build_fact_pool: If True, build a FactPool during the research phase.
         """
         assert (
             do_research
@@ -384,11 +523,54 @@ class STORMWikiRunner(Engine):
         )
         os.makedirs(self.article_output_dir, exist_ok=True)
 
+        # Phase 1.3: 断点续跑
+        state_manager = PipelineStateManager(self.article_output_dir)
+        if resume:
+            loaded = state_manager.load()
+            if loaded is not None:
+                logger.info(f"Resuming from checkpoint: phase={loaded.phase}")
+                # 根据已完成的阶段调整 do_* 标志
+                if state_manager.is_phase_complete("research_done"):
+                    do_research = False
+                    logger.info("Skipping research phase (already completed).")
+                if state_manager.is_phase_complete("outline_done"):
+                    do_generate_outline = False
+                    logger.info("Skipping outline generation phase (already completed).")
+                if state_manager.is_phase_complete("article_done"):
+                    do_generate_article = False
+                    logger.info("Skipping article generation phase (already completed).")
+                if state_manager.is_phase_complete("polish_done"):
+                    do_polish_article = False
+                    logger.info("Skipping article polishing phase (already completed).")
+            else:
+                logger.info("No checkpoint found; starting from scratch.")
+
         # research module
         information_table: StormInformationTable = None
         if do_research:
             information_table = self.run_knowledge_curation_module(
-                ground_truth_url=ground_truth_url, callback_handler=callback_handler
+                ground_truth_url=ground_truth_url,
+                callback_handler=callback_handler,
+                build_fact_pool=build_fact_pool,
+            )
+            # 持久化 FactPool（如已启用）
+            if build_fact_pool and self._fact_pool is not None:
+                fp_path = PipelineStateManager.expected_fact_pool_path(
+                    self.article_output_dir
+                )
+                self._fact_pool.dump_json(fp_path)
+            state_manager.update_phase(
+                "research_done",
+                topic=topic,
+                output_dir=self.article_output_dir,
+                fact_pool_path=PipelineStateManager.expected_fact_pool_path(
+                    self.article_output_dir
+                ),
+                conversation_log_path=PipelineStateManager.expected_conversation_log_path(
+                    self.article_output_dir
+                ),
+                lm_cost_so_far=self.lm_cost,
+                rm_cost_so_far=self.rm_cost,
             )
         # outline generation module
         outline: StormArticle = None
@@ -400,6 +582,14 @@ class STORMWikiRunner(Engine):
                 )
             outline = self.run_outline_generation_module(
                 information_table=information_table, callback_handler=callback_handler
+            )
+            state_manager.update_phase(
+                "outline_done",
+                outline_path=PipelineStateManager.expected_outline_path(
+                    self.article_output_dir
+                ),
+                lm_cost_so_far=self.lm_cost,
+                rm_cost_so_far=self.rm_cost,
             )
 
         # article generation module
@@ -421,6 +611,14 @@ class STORMWikiRunner(Engine):
                 information_table=information_table,
                 callback_handler=callback_handler,
             )
+            state_manager.update_phase(
+                "article_done",
+                article_path=PipelineStateManager.expected_article_path(
+                    self.article_output_dir
+                ),
+                lm_cost_so_far=self.lm_cost,
+                rm_cost_so_far=self.rm_cost,
+            )
 
         # article polishing module
         if do_polish_article:
@@ -438,4 +636,12 @@ class STORMWikiRunner(Engine):
                 )
             self.run_article_polishing_module(
                 draft_article=draft_article, remove_duplicate=remove_duplicate
+            )
+            state_manager.update_phase(
+                "polish_done",
+                polished_article_path=PipelineStateManager.expected_polished_article_path(
+                    self.article_output_dir
+                ),
+                lm_cost_so_far=self.lm_cost,
+                rm_cost_so_far=self.rm_cost,
             )

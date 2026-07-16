@@ -3,6 +3,7 @@ import datetime
 import json
 import os
 import re
+import sys
 from typing import Optional
 
 import markdown
@@ -11,18 +12,56 @@ import streamlit as st
 
 # If you install the source code instead of the `knowledge-storm` package,
 # Uncomment the following lines:
-# import sys
-# sys.path.append('../../')
+import sys
+sys.path.append('../../')
 from knowledge_storm import (
     STORMWikiRunnerArguments,
     STORMWikiRunner,
     STORMWikiLMConfigs,
 )
-from knowledge_storm.lm import OpenAIModel
-from knowledge_storm.rm import YouRM
 from knowledge_storm.storm_wiki.modules.callback import BaseCallbackHandler
+from knowledge_storm.storm_wiki.modules.storm_dataclass import Persona
 from knowledge_storm.utils import truncate_filename
 from stoc import stoc
+
+# 动态导入：根据 StormConfig 的活跃提供商选择 LM/RM 类
+# 避免在启动时因缺少某个 provider 的依赖而崩溃
+def _import_lm_class(class_name):
+    """按需导入 LM 类。"""
+    if class_name == "DeepSeekModel":
+        from knowledge_storm.lm import DeepSeekModel as cls
+    elif class_name == "OpenAIModel":
+        from knowledge_storm.lm import OpenAIModel as cls
+    elif class_name == "LitellmModel":
+        from knowledge_storm.lm import LitellmModel as cls
+    elif class_name == "ClaudeModel":
+        from knowledge_storm.lm import ClaudeModel as cls
+    elif class_name == "GoogleModel":
+        from knowledge_storm.lm import GoogleModel as cls
+    elif class_name == "OllamaClient":
+        from knowledge_storm.lm import OllamaClient as cls
+    else:
+        from knowledge_storm.lm import LitellmModel as cls
+    return cls
+
+
+def _import_rm_class(class_name):
+    """按需导入 RM 类。"""
+    if class_name == "SearXNG":
+        from knowledge_storm.rm import SearXNG as cls
+    elif class_name == "DuckDuckGoSearchRM":
+        from knowledge_storm.rm import DuckDuckGoSearchRM as cls
+    elif class_name == "BingSearch":
+        from knowledge_storm.rm import BingSearch as cls
+    elif class_name == "SerperRM":
+        from knowledge_storm.rm import SerperRM as cls
+    elif class_name == "BraveRM":
+        from knowledge_storm.rm import BraveRM as cls
+    elif class_name == "YouRM":
+        from knowledge_storm.rm import YouRM as cls
+    else:
+        from knowledge_storm.rm import DuckDuckGoSearchRM as cls
+    return cls
 
 
 class DemoFileIOHelper:
@@ -233,16 +272,9 @@ class DemoTextProcessingHelper:
         """
         parsed_data = []
         for persona_conversation_data in json_data:
-            if ": " in persona_conversation_data["perspective"]:
-                name, description = persona_conversation_data["perspective"].split(
-                    ": ", 1
-                )
-            elif "- " in persona_conversation_data["perspective"]:
-                name, description = persona_conversation_data["perspective"].split(
-                    "- ", 1
-                )
-            else:
-                name, description = "", persona_conversation_data["perspective"]
+            raw = persona_conversation_data["perspective"]
+            # 使用 Persona.from_perspective 统一解析（兼容中英文冒号）
+            p = Persona.from_perspective(raw)
             cur_conversation = []
             for dialogue_turn in persona_conversation_data["dlg_turns"]:
                 cur_conversation.append(
@@ -256,7 +288,7 @@ class DemoTextProcessingHelper:
                         ),
                     }
                 )
-            parsed_data.append((name, description, cur_conversation))
+            parsed_data.append((p.name, p.description, cur_conversation))
         return parsed_data
 
     @staticmethod
@@ -468,7 +500,7 @@ def _construct_citation_dict_from_search_result(search_results):
     return citation_dict
 
 
-def _display_main_article_text(article_text, citation_dict, table_content_sidebar):
+def _display_main_article_text(article_text, citation_dict, table_content_sidebar=None):
     # Post-process the generated article for better display.
     if "Write the lead section:" in article_text:
         article_text = article_text[
@@ -487,14 +519,19 @@ def _display_main_article_text(article_text, citation_dict, table_content_sideba
 
 def _display_references(citation_dict):
     if citation_dict:
-        reference_list = [f"reference [{i}]" for i in range(1, len(citation_dict) + 1)]
-        selected_key = st.selectbox("Select a reference", reference_list)
-        citation_val = citation_dict[reference_list.index(selected_key) + 1]
+        ref_titles = []
+        for i in range(1, len(citation_dict) + 1):
+            entry = citation_dict[i]
+            title = entry.get("title", "").replace("$", "\\$")[:80]
+            ref_titles.append(f"[{i}] {title}" if title else f"[{i}]")
+        selected_key = st.selectbox("选择参考文献", ref_titles)
+        idx = ref_titles.index(selected_key) + 1
+        citation_val = citation_dict[idx]
         citation_val["title"] = citation_val["title"].replace("$", "\\$")
-        st.markdown(f"**Title:** {citation_val['title']}")
-        st.markdown(f"**Url:** {citation_val['url']}")
+        st.markdown(f"**标题:** {citation_val['title']}")
+        st.markdown(f"**链接:** {citation_val['url']}")
         snippets = "\n\n".join(citation_val["snippets"]).replace("$", "\\$")
-        st.markdown(f"**Highlights:**\n\n {snippets}")
+        st.markdown(f"**摘要:**\n\n{snippets}")
     else:
         st.markdown("**No references available**")
 
@@ -516,11 +553,46 @@ def _display_persona_conversations(conversation_log):
             # show user / agent utterance in dialogue UI
             for message in parsed_conversation_history[idx][2]:
                 message["content"] = message["content"].replace("$", "\\$")
-                with st.chat_message(message["role"]):
+                # 长内容使用 expander 全文展示，默认展开
+                role_label = "🧑‍💻 提问" if message["role"] == "user" else "🤖 回答"
+                with st.expander(f"{role_label} ({len(message['content'])}字)", expanded=True):
                     if message["role"] == "user":
                         st.markdown(f"**{message['content']}**")
                     else:
                         st.markdown(message["content"])
+
+
+def _build_toc_html(md_text: str) -> str:
+    """从 Markdown 构建可点击的目录 HTML，返回 HTML 字符串。"""
+    import re
+    items = []
+    for line in md_text.split("\n"):
+        if line.startswith("#"):
+            level = line.count("#")
+            title = line.strip("# ").strip()
+            anchor = re.sub(r'[^\w\u4e00-\u9fff]', '-', title.lower()).strip('-')
+            indent = "&nbsp;" * 4 * (level - 1)
+            fs = "13px" if level > 2 else "14px"
+            items.append(
+                f'{indent}<a href="#{anchor}" style="display:block;font-size:{fs};text-decoration:none;color:#555;padding:2px 0;">{title}</a>'
+            )
+    return '<div style="max-height:70vh;overflow-y:auto;">' + "\n".join(items) + "</div>"
+
+
+def _markdown_to_html(md_text: str, citation_dict: dict) -> str:
+    """Markdown → HTML，带锚点 ID 和可点击引用链接。"""
+    import re
+    import markdown as _md
+
+    # 处理引用 [1] → 可点击链接
+    def _cit_link(m):
+        i = m.group(1)
+        url = citation_dict.get(int(i), {}).get("url", "#") if citation_dict else "#"
+        return f'<a href="{url}" target="_blank" style="color:#1a73e8;">[{i}]</a>'
+
+    md_text = re.sub(r"\[(\d+)\]", _cit_link, md_text)
+    md_text = md_text.replace("$", "\\$")
+    return _md.markdown(md_text, extensions=["extra", "codehilite"])
 
 
 def _display_main_article(
@@ -529,32 +601,36 @@ def _display_main_article(
     article_data = DemoFileIOHelper.assemble_article_data(
         selected_article_file_path_dict
     )
+    article_text = article_data.get("article", "")
+    citation_dict = article_data.get("citations", {})
 
-    with st.container(height=1000, border=True):
-        table_content_sidebar = st.sidebar.expander(
-            "**Table of contents**", expanded=True
-        )
-        _display_main_article_text(
-            article_text=article_data.get("article", ""),
-            citation_dict=article_data.get("citations", {}),
-            table_content_sidebar=table_content_sidebar,
-        )
+    # 去掉文章开头的 # summary 标题（避免重复显示）
+    if article_text.startswith("# summary"):
+        article_text = "\n".join(article_text.split("\n")[1:]).strip()
+    if article_text.startswith("# Summary"):
+        article_text = "\n".join(article_text.split("\n")[1:]).strip()
 
-    # display reference panel
-    if show_reference and "citations" in article_data:
-        with st.sidebar.expander("**References**", expanded=True):
-            with st.container(height=800, border=False):
-                _display_references(citation_dict=article_data.get("citations", {}))
+    # 侧边栏目录
+    with st.sidebar:
+        st.markdown("**📑 目录**")
+        st.markdown(_build_toc_html(article_text), unsafe_allow_html=True)
 
-    # display conversation history
-    if show_conversation and "conversation_log" in article_data:
-        with st.expander(
-            "**STORM** is powered by a knowledge agent that proactively research a given topic by asking good questions coming from different perspectives.\n\n"
-            ":sunglasses: Click here to view the agent's brain**STORM**ing process!"
-        ):
-            _display_persona_conversations(
-                conversation_log=article_data.get("conversation_log", {})
-            )
+    st.markdown("---")
+
+    # 底部 Tab
+    tab_article, tab_conv, tab_ref = st.tabs(["📄 文章", "💬 研究过程", "📚 参考文献"])
+    with tab_article:
+        st.markdown(_markdown_to_html(article_text, citation_dict), unsafe_allow_html=True)
+    with tab_conv:
+        if "conversation_log" in article_data:
+            _display_persona_conversations(article_data["conversation_log"])
+        else:
+            st.info("暂无对话记录")
+    with tab_ref:
+        if "citations" in article_data:
+            _display_references(article_data["citations"])
+        else:
+            st.info("暂无参考文献")
 
 
 def get_demo_dir():
@@ -575,36 +651,128 @@ def clear_other_page_session_state(page_index: Optional[int]):
 
 
 def set_storm_runner():
+    """
+    从 StormConfig 配置中心读取活跃的 LLM 和检索引擎配置，
+    动态构建 STORMWikiRunner 实例。
+    不写死任何提供商，完全由 ~/.storm/config.toml 驱动。
+    """
+    # 确保能找到 cli/config_manager（相对于 storm.py 的位置）
+    _cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..")
+    if _cli_path not in sys.path:
+        sys.path.insert(0, _cli_path)
+    from cli.config_manager import StormConfig
+
+    config = StormConfig()
     current_working_dir = os.path.join(get_demo_dir(), "DEMO_WORKING_DIR")
     if not os.path.exists(current_working_dir):
         os.makedirs(current_working_dir)
 
-    # configure STORM runner
-    llm_configs = STORMWikiLMConfigs()
-    llm_configs.init_openai_model(
-        openai_api_key=st.secrets["OPENAI_API_KEY"], openai_type="openai"
-    )
-    llm_configs.set_question_asker_lm(
-        OpenAIModel(
-            model="gpt-4-1106-preview",
-            api_key=st.secrets["OPENAI_API_KEY"],
-            api_provider="openai",
-            max_tokens=500,
-            temperature=1.0,
-            top_p=0.9,
-        )
-    )
+    # ── 引擎参数（从 StormConfig 读取，用户可调） ──
     engine_args = STORMWikiRunnerArguments(
         output_dir=current_working_dir,
-        max_conv_turn=3,
-        max_perspective=3,
-        search_top_k=3,
-        retrieve_top_k=5,
+        max_conv_turn=int(config.get("system.max_conv_turn") or 3),
+        max_perspective=int(config.get("system.max_perspective") or 3),
+        search_top_k=int(config.get("system.search_top_k") or 3),
+        retrieve_top_k=int(config.get("system.retrieve_top_k") or 5),
     )
 
-    rm = YouRM(ydc_api_key=st.secrets["YDC_API_KEY"], k=engine_args.search_top_k)
+    # ── LLM 配置（从 StormConfig 读取） ──
+    llm_cfg = config.get_llm_config()
+    provider = llm_cfg["provider"]
+    api_key = llm_cfg["api_key"]
+    api_base = llm_cfg["api_base"]
+    model_name = llm_cfg["model"]
+    lm_class_name = llm_cfg["lm_class"]
+    temperature = llm_cfg["temperature"]
+    top_p = llm_cfg["top_p"]
 
-    runner = STORMWikiRunner(engine_args, llm_configs, rm)
+    # 若配置中未找到 key，尝试从 st.secrets 或环境变量读取
+    if not api_key:
+        env_key = os.environ.get(f"{provider.upper()}_API_KEY", "")
+        api_key = env_key or st.secrets.get(f"{provider.upper()}_API_KEY", "")
+
+    # 按需导入 LM 类
+    LMClass = _import_lm_class(lm_class_name)
+
+    # 构建各阶段 LM
+    lm_kwargs = {"temperature": temperature, "top_p": top_p}
+    if provider == "ollama":
+        lm_kwargs["url"] = api_base
+        lm_kwargs["model"] = model_name
+    elif provider == "deepseek":
+        lm_kwargs["api_key"] = api_key
+        lm_kwargs["api_base"] = api_base
+    else:
+        lm_kwargs["api_key"] = api_key
+        if api_base:
+            lm_kwargs["api_base"] = api_base
+
+    llm_configs = STORMWikiLMConfigs()
+    try:
+        llm_configs.set_conv_simulator_lm(
+            LMClass(model=model_name, max_tokens=int(config.get("system.max_tokens_conv") or 1000), **lm_kwargs)
+        )
+        llm_configs.set_question_asker_lm(
+            LMClass(model=model_name, max_tokens=int(config.get("system.max_tokens_conv") or 1000), **lm_kwargs)
+        )
+        llm_configs.set_outline_gen_lm(
+            LMClass(model=model_name, max_tokens=int(config.get("system.max_tokens_outline") or 600), **lm_kwargs)
+        )
+        llm_configs.set_article_gen_lm(
+            LMClass(model=model_name, max_tokens=int(config.get("system.max_tokens_article") or 1500), **lm_kwargs)
+        )
+        llm_configs.set_article_polish_lm(
+            LMClass(model=model_name, max_tokens=int(config.get("system.max_tokens_polish") or 4000), **lm_kwargs)
+        )
+    except Exception as e:
+        st.error(f"❌ LLM 初始化失败 ({provider}): {e}")
+        st.session_state["runner"] = None
+        return
+
+    # ── 检索引擎配置（从 StormConfig 读取） ──
+    rm_cfg = config.get_retriever_config()
+    rm_name = rm_cfg["name"]
+    rm_class_name = rm_cfg["class"]
+    rm_params = rm_cfg["params"].copy()
+    rm_params["k"] = engine_args.search_top_k
+
+    RMClass = _import_rm_class(rm_class_name)
+    try:
+        if rm_name == "searxng":
+            rm = RMClass(
+                searxng_api_url=rm_params.pop("searxng_api_url"),
+                searxng_api_key=rm_params.pop("searxng_api_key", None),
+                k=rm_params.pop("k", engine_args.search_top_k),
+                engines_academic=rm_params.pop("engines_academic", None),
+                engines_chinese=rm_params.pop("engines_chinese", None),
+                engines_general=rm_params.pop("engines_general", None),
+            )
+        elif rm_name == "duckduckgo":
+            rm = RMClass(**rm_params)
+        else:
+            # 其他检索引擎：传参方式可能不同，尝试通用方式
+            rm = RMClass(**rm_params)
+    except Exception as e:
+        st.error(f"❌ 检索引擎初始化失败 ({rm_name}): {e}")
+        st.session_state["runner"] = None
+        return
+
+    # ── 嵌入与重排序（从 StormConfig 读取） ──
+    try:
+        from knowledge_storm.encoder import Encoder as _StormEncoder
+        encoder = _StormEncoder()
+    except Exception as e:
+        st.warning(f"嵌入模型初始化失败，使用默认: {e}")
+        encoder = None
+
+    try:
+        from knowledge_storm.reranker import Reranker as _StormReranker
+        reranker = _StormReranker()
+    except Exception:
+        reranker = None
+
+    runner = STORMWikiRunner(engine_args, llm_configs, rm,
+                             encoder=encoder, reranker=reranker)
     st.session_state["runner"] = runner
 
 
@@ -628,25 +796,42 @@ class StreamlitCallbackHandler(BaseCallbackHandler):
     def __init__(self, status_container):
         self.status_container = status_container
 
+    def _safe_update(self, method_name, *args, **kwargs):
+        """安全更新 UI，忽略后台线程调用的 RuntimeError（Streamlit 不允许从非主线程更新 UI）。
+        更新后加入微秒让步，让 Streamlit 将挂起的 UI 消息刷新到浏览器，
+        否则在后续阻塞操作（LLM API 调用等）期间用户看不到实时进度。"""
+        try:
+            getattr(self.status_container, method_name)(*args, **kwargs)
+            import time
+            time.sleep(0.05)
+        except RuntimeError:
+            pass
+
     def on_identify_perspective_start(self, **kwargs):
-        self.status_container.info(
-            "Start identifying different perspectives for researching the topic."
+        self._safe_update("info",
+            "开始识别研究该话题的不同视角..."
         )
 
-    def on_identify_perspective_end(self, perspectives: list[str], **kwargs):
-        perspective_list = "\n- ".join(perspectives)
-        self.status_container.success(
-            f"Finish identifying perspectives. Will now start gathering information"
-            f" from the following perspectives:\n- {perspective_list}"
+    def on_identify_perspective_end(self, perspectives: list, **kwargs):
+        # 兼容 Persona 对象和字符串
+        items = []
+        for p in perspectives:
+            if hasattr(p, 'to_perspective'):
+                items.append(p.to_perspective())
+            else:
+                items.append(str(p))
+        perspective_list = "\n- ".join(items)
+        self._safe_update("success",
+            f"视角识别完成。将从以下视角开始收集信息：\n- {perspective_list}"
         )
 
     def on_information_gathering_start(self, **kwargs):
-        self.status_container.info("Start browsing the Internet.")
+        self._safe_update("info", "正在浏览互联网获取信息...")
 
     def on_dialogue_turn_end(self, dlg_turn, **kwargs):
         urls = list(set([r.url for r in dlg_turn.search_results]))
         for url in urls:
-            self.status_container.markdown(
+            self._safe_update("markdown",
                 f"""
                     <style>
                     .small-font {{
@@ -655,23 +840,19 @@ class StreamlitCallbackHandler(BaseCallbackHandler):
                         padding: 0px;
                     }}
                     </style>
-                    <div class="small-font">Finish browsing <a href="{url}" class="small-font" target="_blank">{url}</a>.</div>
+                    <div class="small-font">完成浏览 <a href="{url}" class="small-font" target="_blank">{url}</a>.</div>
                     """,
                 unsafe_allow_html=True,
             )
 
     def on_information_gathering_end(self, **kwargs):
-        self.status_container.success("Finish collecting information.")
+        self._safe_update("success", "信息收集完成。")
 
     def on_information_organization_start(self, **kwargs):
-        self.status_container.info(
-            "Start organizing information into a hierarchical outline."
-        )
+        self._safe_update("info", "正在将信息组织成层级大纲...")
 
     def on_direct_outline_generation_end(self, outline: str, **kwargs):
-        self.status_container.success(
-            f"Finish leveraging the internal knowledge of the large language model."
-        )
+        self._safe_update("success", "已完成利用大语言模型的内置知识生成大纲。")
 
     def on_outline_refinement_end(self, outline: str, **kwargs):
-        self.status_container.success(f"Finish leveraging the collected information.")
+        self._safe_update("success", "已完成利用收集到的信息完善大纲。")

@@ -35,21 +35,35 @@ class stoc:
 
     def toc(self, expander):
         st.write(DISABLE_LINK_CSS, unsafe_allow_html=True)
-        # st.sidebar.caption("Table of contents")
         if expander is None:
-            expander = st.sidebar.expander("**Table of contents**", expanded=True)
+            expander = st.sidebar.expander("**目录**", expanded=True)
         with expander:
             with st.container(height=600, border=False):
                 markdown_toc = ""
                 for title_size, title in self.toc_items:
                     h = int(title_size.replace("h", ""))
+                    link_id = re.sub(r'[^a-zA-Z0-9\u4e00-\u9fff_-]', '', title.lower().replace(' ', '-'))
                     markdown_toc += (
                         " " * 2 * h
                         + "- "
-                        + f'<a href="#{normalize(title)}" class="toc"> {title}</a> \n'
+                        + f'<a href="#{link_id}" class="toc"> {title}</a> \n'
                     )
-                # st.sidebar.write(markdown_toc, unsafe_allow_html=True)
                 st.write(markdown_toc, unsafe_allow_html=True)
+
+        # TOC 点击时自动切换到「文章」Tab 后再定位
+        st.markdown("""
+<script>
+document.addEventListener('click', function(e) {
+    var link = e.target.closest('a.toc');
+    if (link) {
+        var tabs = document.querySelectorAll('[data-baseweb="tab"]');
+        tabs.forEach(function(t) {
+            if (t.textContent.includes('\u6587\u7ae0')) t.click();
+        });
+    }
+});
+</script>
+""", unsafe_allow_html=True)
 
     @classmethod
     def get_toc(cls, markdown_text: str, topic=""):
@@ -89,29 +103,35 @@ class stoc:
     @classmethod
     def from_markdown(cls, text: str, expander=None):
         self = cls()
+        # 直接用原始标题文本生成稳定的 id
+        def _make_id(t):
+            return re.sub(r'[^a-zA-Z0-9\u4e00-\u9fff_-]', '', t.lower().replace(' ', '-'))
+
+        html_lines = []
         for line in text.splitlines():
-            if line.startswith("###"):
-                self.h3(line[3:], write=False)
-            elif line.startswith("##"):
-                self.h2(line[2:], write=False)
-            elif line.startswith("#"):
-                self.h1(line[1:], write=False)
-        # customize markdown font size
+            if line.startswith("### "):
+                t = line[4:].strip()
+                self.toc_items.append(("h3", t))
+                html_lines.append(f'<h3 id="{_make_id(t)}">{t}</h3>')
+            elif line.startswith("## "):
+                t = line[3:].strip()
+                self.toc_items.append(("h2", t))
+                html_lines.append(f'<h2 id="{_make_id(t)}">{t}</h2>')
+            elif line.startswith("# "):
+                t = line[2:].strip()
+                self.toc_items.append(("h1", t))
+                html_lines.append(f'<h1 id="{_make_id(t)}">{t}</h1>')
+            else:
+                html_lines.append(line)
+
         custom_css = """
         <style>
-            /* Adjust the font size for headings */
-            h1 { font-size: 28px; }
-            h2 { font-size: 24px; }
-            h3 { font-size: 22px; }
-            h4 { font-size: 20px; }
-            h5 { font-size: 18px; }
-            /* Adjust the font size for normal text */
+            h1 { font-size: 28px; } h2 { font-size: 24px; } h3 { font-size: 22px; }
+            h4 { font-size: 20px; } h5 { font-size: 18px; }
             p { font-size: 18px; }
         </style>
         """
-        st.markdown(custom_css, unsafe_allow_html=True)
-
-        st.write(text)
+        st.markdown(custom_css + "\n".join(html_lines), unsafe_allow_html=True)
         self.toc(expander=expander)
 
 

@@ -6,5 +6,6 @@ from .lm import *
 from .rm import *
 from .utils import *
 from .dataclass import *
+from .reranker import *
 
 __version__ = "1.1.0"

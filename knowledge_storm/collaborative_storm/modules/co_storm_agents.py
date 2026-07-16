@@ -1,7 +1,6 @@
 import dspy
 from itertools import zip_longest
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from typing import List, Optional, TYPE_CHECKING
 
 from .callback import BaseCallbackHandler
@@ -190,6 +189,8 @@ class Moderator(Agent):
     def _get_conv_turn_unused_information(
         self, conv_turn: ConversationTurn, knowledge_base: KnowledgeBase
     ):
+        from sklearn.metrics.pairwise import cosine_similarity
+
         # extract all snippets from raw retrieved information
         raw_retrieved_info: List[Information] = conv_turn.raw_retrieved_info
         raw_retrieved_single_snippet_info: List[Information] = []

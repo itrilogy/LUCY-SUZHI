@@ -15,7 +15,11 @@ from dsp import ERRORS, backoff_hdlr, giveup_hdlr
 from dsp.modules.hf import openai_to_hf
 from dsp.modules.hf_client import send_hftgi_request_v01_wrapped
 from openai import OpenAI, AzureOpenAI
-from transformers import AutoTokenizer
+
+try:
+    from transformers import AutoTokenizer as _AutoTokenizer
+except ImportError:
+    _AutoTokenizer = None
 
 try:
     from anthropic import RateLimitError
@@ -1041,10 +1045,15 @@ class TogetherClient(dspy.HFModel):
         #     self.use_inst_template = True
         self.apply_tokenizer_chat_template = apply_tokenizer_chat_template
         if self.apply_tokenizer_chat_template:
+            if _AutoTokenizer is None:
+                raise ImportError(
+                    "TogetherClient with apply_tokenizer_chat_template=True requires "
+                    "`pip install transformers`"
+                )
             logging.info("Loading huggingface tokenizer.")
             if hf_tokenizer_name is None:
                 hf_tokenizer_name = self.model
-            self.tokenizer = AutoTokenizer.from_pretrained(
+            self.tokenizer = _AutoTokenizer.from_pretrained(
                 hf_tokenizer_name, cache_dir=kwargs.get("cache_dir", None)
             )
 

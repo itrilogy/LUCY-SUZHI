@@ -26,7 +26,21 @@ def handle_not_started():
                 pass_appropriateness_check = True
 
                 # Submit button for the form
-                submit_button = st.form_submit_button(label="Research")
+                submit_button = st.form_submit_button(label="开始研究")
+
+                # ── 高级参数（可折叠） ──
+                with st.expander("⚙️ 高级参数"):
+                    from cli.config_manager import StormConfig
+                    _cfg = StormConfig()
+                    st.session_state["page3_max_conv_turn"] = st.number_input(
+                        "每视角对话轮次", min_value=1, max_value=10, value=int(_cfg.get("system.max_conv_turn") or 3),
+                        help="每个视角的模拟问答轮数，越大信息越丰富但耗时更长")
+                    st.session_state["page3_max_perspective"] = st.number_input(
+                        "视角数量", min_value=1, max_value=10, value=int(_cfg.get("system.max_perspective") or 3),
+                        help="从不同角度研究话题的专家数量")
+                    st.session_state["page3_search_top_k"] = st.number_input(
+                        "每轮搜索结果数", min_value=1, max_value=10, value=int(_cfg.get("system.search_top_k") or 3),
+                        help="每轮搜索返回的 top K 结果")
                 # only start new search when button is clicked, not started, or already finished previous one
                 if submit_button and st.session_state["page3_write_article_state"] in [
                     "not started",
@@ -54,6 +68,11 @@ def handle_not_started():
                         time.sleep(5)
                         alert.empty()
                     else:
+                        # 将用户调整的高级参数持久化到 config
+                        _cfg = StormConfig()
+                        _cfg.set("system.max_conv_turn", str(st.session_state.get("page3_max_conv_turn", 3)))
+                        _cfg.set("system.max_perspective", str(st.session_state.get("page3_max_perspective", 3)))
+                        _cfg.set("system.search_top_k", str(st.session_state.get("page3_search_top_k", 3)))
                         st.session_state["page3_write_article_state"] = "initiated"
 
 

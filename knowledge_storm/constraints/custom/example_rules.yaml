@@ -1,0 +1,20 @@
+"""
+rules:
+  - name: "no_first_person"
+    description: "禁止第一人称表达（正文section）"
+    severity: warning
+    check_type: "pattern"
+    pattern: "(我(们|认为|发现|提出)|we (believe|propose|think))"
+    applies_to: ["body"]
+
+  - name: "citation_density"
+    description: "每个正文段落至少包含 1 条引用"
+    severity: warning
+    check_type: "semantic"
+    threshold: 0.8
+
+  - name: "fact_anchoring"
+    description: "所有数值断言必须在 FactPool 中有锚定"
+    severity: error
+    check_type: "fact_pool_lookup"
+"""

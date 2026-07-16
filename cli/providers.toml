@@ -1,0 +1,36 @@
+# STORM 服务提供商端点注册表
+# 知名厂商的 base_url / list_models_url 自动填充且不可修改。
+# "OpenAI 兼容" 类别的 base_url 由用户填写，list_models_url 自动推导为 {base_url}/v1/models。
+# 模型列表 API 返回格式: {"data": [{"id": "model-name"}, ...]}
+
+[llm.DeepSeek]
+base_url = "https://api.deepseek.com"
+list_models_url = "https://api.deepseek.com/models"
+
+[llm.OpenAI]
+base_url = "https://api.openai.com/v1"
+list_models_url = "https://api.openai.com/v1/models"
+
+[llm.custom]
+# base_url 由用户输入
+# list_models_url 自动推导为 {base_url}/v1/models
+
+[embed.OpenAI]
+base_url = "https://api.openai.com/v1"
+list_models_url = "https://api.openai.com/v1/models"
+
+[embed.custom]
+# base_url 由用户输入
+# list_models_url 自动推导为 {base_url}/v1/models
+
+[rerank.Cohere]
+base_url = "https://api.cohere.com"
+# Cohere 无标准 /v1/models 端点，不使用模型列表拉取
+
+[rerank.Jina]
+base_url = "https://api.jina.ai"
+# Jina 无标准 /v1/models 端点，不使用模型列表拉取
+
+[rerank.custom]
+# base_url 由用户输入
+# 重排序一般不提供模型列表 API

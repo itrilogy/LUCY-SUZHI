@@ -1,0 +1,361 @@
+{
+  "info" : {
+    "description" : "提供多种工具的 WebSSH API。",
+    "title" : "WebSSH",
+    "version" : "Bundle.main.fullVersionNumber"
+  },
+  "openapi" : "3.1.0",
+  "paths" : {
+    "/webssh/Terminal_Session_List_All" : {
+      "post" : {
+        "description" : "获取活跃的终端会话（SSH、Telnet）",
+        "operationId" : "Terminal_Session_List_All",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "description" : "活跃终端会话的数组",
+                  "items" : {
+                    "type" : "string"
+                  },
+                  "type" : "array"
+                }
+              }
+            },
+            "description" : "活跃终端会话的数组"
+          }
+        },
+        "summary" : "Terminal_Session_List_All",
+        "x-openai-isConsequential" : true
+      }
+    },
+    "/webssh/Terminal_Session_Retrieve_One" : {
+      "post" : {
+        "description" : "根据 UUID 获取完整的终端会话（包含终端屏幕）",
+        "operationId" : "Terminal_Session_Retrieve_One",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "description" : "根据 UUID 获取完整的终端会话（包含终端屏幕）",
+                "properties" : {
+                  "sessionUUID" : {
+                    "description" : "要查询的会话标识符",
+                    "type" : "string"
+                  }
+                },
+                "required" : [
+                  "sessionUUID"
+                ],
+                "type" : "object"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "description" : "完整的终端会话（包含终端屏幕）",
+                  "type" : "string"
+                }
+              }
+            },
+            "description" : "完整的终端会话（包含终端屏幕）"
+          }
+        },
+        "summary" : "Terminal_Session_Retrieve_One",
+        "x-openai-isConsequential" : true
+      }
+    },
+    "/webssh/Terminal_Session_Send_Command" : {
+      "post" : {
+        "description" : "向终端会话发送命令",
+        "operationId" : "Terminal_Session_Send_Command",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "description" : "向终端会话发送命令",
+                "properties" : {
+                  "command" : {
+                    "description" : "要在终端会话中执行的命令。在命令末尾加上回车符以执行。如果命令包含转义序列，请使用百分号编码并将 commandFormat 设为 `.percentEncoded`。",
+                    "type" : "string"
+                  },
+                  "commandFormat" : {
+                    "description" : "指示所提供命令字符串的格式：",
+                    "enum" : [
+                      "plain",
+                      "percentEncoded"
+                    ],
+                    "type" : "string"
+                  },
+                  "sessionUUID" : {
+                    "description" : "要查询的会话标识符",
+                    "type" : "string"
+                  }
+                },
+                "required" : [
+                  "sessionUUID",
+                  "command",
+                  "commandFormat"
+                ],
+                "type" : "object"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            },
+            "description" : "结构化响应"
+          }
+        },
+        "summary" : "Terminal_Session_Send_Command",
+        "x-openai-isConsequential" : true
+      }
+    },
+    "/webssh/Tool_Addresses" : {
+      "post" : {
+        "description" : "获取您的 IP 地址，包括私有地址和公网地址。",
+        "operationId" : "Tool_Addresses",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "description" : "IP 地址数组",
+                  "items" : {
+                    "type" : "string"
+                  },
+                  "type" : "array"
+                }
+              }
+            },
+            "description" : "IP 地址数组"
+          }
+        },
+        "summary" : "Tool_Addresses",
+        "x-openai-isConsequential" : true
+      }
+    },
+    "/webssh/Tool_DNS_Lookup" : {
+      "post" : {
+        "description" : "向域名的权威名称服务器发起 DNS 查询请求。",
+        "operationId" : "Tool_DNS_Lookup",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "description" : "向域名的权威名称服务器发起 DNS 查询请求。",
+                "properties" : {
+                  "host" : {
+                    "description" : "要查询的主机名",
+                    "type" : "string"
+                  },
+                  "recordType" : {
+                    "description" : "可以是 \"A\"、\"AAAA\"、\"MX\"、\"NS\"、\"PTR\"、\"SOA\"、\"SRV\"、\"TXT\" 之一",
+                    "type" : "string"
+                  },
+                  "resolver" : {
+                    "description" : "自定义 DNS 解析服务器地址。默认为空，为空时使用标准解析器和系统解析器。",
+                    "type" : "string"
+                  }
+                },
+                "required" : [
+                  "host",
+                  "recordType"
+                ],
+                "type" : "object"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "description" : "您的 DNS 查询结果记录",
+                  "items" : {
+                    "type" : "string"
+                  },
+                  "type" : "array"
+                }
+              }
+            },
+            "description" : "您的 DNS 查询结果记录"
+          }
+        },
+        "summary" : "Tool_DNS_Lookup",
+        "x-openai-isConsequential" : true
+      }
+    },
+    "/webssh/Tool_Whois" : {
+      "post" : {
+        "description" : "对域名或 IP 地址发起 Whois 查询",
+        "operationId" : "Tool_Whois",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "description" : "对域名或 IP 地址发起 Whois 查询",
+                "properties" : {
+                  "domainName" : {
+                    "description" : "要查询的域名或 IP 地址",
+                    "type" : "string"
+                  }
+                },
+                "required" : [
+                  "domainName"
+                ],
+                "type" : "object"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "description" : "Whois 查询结果",
+                  "type" : "string"
+                }
+              }
+            },
+            "description" : "Whois 查询结果"
+          }
+        },
+        "summary" : "Tool_Whois",
+        "x-openai-isConsequential" : true
+      }
+    },
+    "/webssh/WebSSH_Documentation_Query" : {
+      "post" : {
+        "description" : "提出与 WebSSH 应用相关的任何问题。将在最新的 webssh.net 文档网站上在线搜索。需要启用 WebSSH Brain。",
+        "operationId" : "WebSSH_Documentation_Query",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "description" : "提出与 WebSSH 应用相关的任何问题。将在最新的 webssh.net 文档网站上在线搜索。需要启用 WebSSH Brain。",
+                "properties" : {
+                  "userQuestion" : {
+                    "description" : "完整的自然语言问题。保持用户的语言。",
+                    "type" : "string"
+                  }
+                },
+                "required" : [
+                  "userQuestion"
+                ],
+                "type" : "object"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "description" : "基于 webssh.net 文档网站的解答",
+                  "type" : "string"
+                }
+              }
+            },
+            "description" : "基于 webssh.net 文档网站的解答"
+          }
+        },
+        "summary" : "WebSSH_Documentation_Query",
+        "x-openai-isConsequential" : true
+      }
+    },
+    "/webssh/WebSSH_Version" : {
+      "post" : {
+        "description" : "获取当前 WebSSH 版本",
+        "operationId" : "WebSSH_Version",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "description" : "返回的一个或多个文件",
+                  "properties" : {
+                    "openaiFileResponse" : {
+                      "description" : "文件响应数组",
+                      "items" : {
+                        "description" : "通过工具调用返回的文件内容",
+                        "properties" : {
+                          "content" : {
+                            "description" : "Base64 编码的文件内容",
+                            "format" : "byte",
+                            "type" : "string"
+                          },
+                          "mime_type" : {
+                            "description" : "文件的 MIME 类型",
+                            "type" : "string"
+                          },
+                          "name" : {
+                            "description" : "文件名",
+                            "type" : "string"
+                          }
+                        },
+                        "type" : "object"
+                      },
+                      "type" : "array"
+                    }
+                  },
+                  "type" : "object"
+                }
+              }
+            },
+            "description" : "结构化响应"
+          }
+        },
+        "summary" : "WebSSH_Version",
+        "x-openai-isConsequential" : false
+      }
+    },
+    "/webssh/WebSSH_Version_Current" : {
+      "post" : {
+        "description" : "获取 WebSSH 版本",
+        "operationId" : "WebSSH_Version_Current",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "description" : "语义化版本号",
+                  "type" : "string"
+                }
+              }
+            },
+            "description" : "语义化版本号"
+          }
+        },
+        "summary" : "WebSSH_Version_Current",
+        "x-openai-isConsequential" : true
+      }
+    }
+  },
+  "servers" : [
+    {
+      "description" : "生产服务器",
+      "url" : "http://0.0.0.0"
+    }
+  ]
+}
