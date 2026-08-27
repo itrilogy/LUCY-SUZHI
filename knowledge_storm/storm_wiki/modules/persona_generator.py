@@ -84,31 +84,41 @@ class CreateWriterWithPersona(dspy.Module):
             for s in related_topics.split("\n"):
                 if "http" in s:
                     urls.append(s[s.find("http") :])
-            # 替换 Wikipedia 域名为可访问的反代站点
-            urls = [u.replace("en.wikipedia.org", "en.wiki.nunch.uk")
-                      .replace("zh.wikipedia.org", "zh.wiki.nunch.uk")
-                      .replace("wikipedia.org", "en.wiki.nunch.uk") for u in urls]
+            # 替换 Wikipedia 域名为可访问的反代站点或直接抓取
+            clean_urls = []
+            for u in urls[:5]:
+                clean_urls.append(
+                    u.replace("en.wikipedia.org", "en.wiki.nunch.uk")
+                     .replace("zh.wikipedia.org", "zh.wiki.nunch.uk")
+                     .replace("wikipedia.org", "en.wiki.nunch.uk")
+                )
+
             examples = []
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=4) as ex:
-                futures = {ex.submit(get_wiki_page_title_and_toc, url): url for url in urls[:5]}
+                futures = {ex.submit(get_wiki_page_title_and_toc, url): url for url in clean_urls}
                 try:
-                    for f in as_completed(futures, timeout=60):
+                    for f in as_completed(futures, timeout=8):
                         try:
                             title, toc = f.result()
                             if toc:
                                 examples.append(f"Title: {title}\nTable of Contents: {toc}")
                         except Exception as e:
-                            logging.error(f"Error when processing {futures[f]}: {e}")
+                            logging.debug(f"Wikipedia fetch skipped for {futures[f]}: {e}")
                             continue
-                except TimeoutError:
-                    logging.warning("Wikipedia fetch timed out, using partial results")
-                    # 超时时已完成的结果仍然可用
+                except Exception:
+                    logging.info("Wikipedia fetch timed out or unavailable, fallback to direct LLM generation.")
+
             if len(examples) == 0:
                 examples.append("N/A")
-            gen_persona_output = self.gen_persona(
-                topic=topic, examples="\n----------\n".join(examples)
-            ).personas
+
+            try:
+                gen_persona_output = self.gen_persona(
+                    topic=topic, examples="\n----------\n".join(examples)
+                ).personas
+            except Exception as e:
+                logging.error(f"GenPersona failed: {e}")
+                gen_persona_output = ""
 
         personas = []
         for s in gen_persona_output.split("\n"):

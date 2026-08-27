@@ -717,30 +717,40 @@ class SearXNG(dspy.Retrieve):
 
         for query in queries:
             try:
-                params = {"q": query, "format": "json", "language": "zh-CN"}
-                # 三轨路由: 根据查询语言/特征选择引擎组
-                if any('\u4e00' <= c <= '\u9fff' for c in query):
-                    # 含中文字符 → 中文组
+                # 三轨智能路由: 根据查询特征与中文字符比例选择引擎组
+                chinese_chars = sum(1 for c in query if '\u4e00' <= c <= '\u9fff')
+                total_chars = len(query.strip())
+                is_mixed_or_academic = any(kw in query.lower() for kw in ["paper", "survey", "arxiv", "benchmark", "dataset", "framework", "algorithm"])
+
+                if chinese_chars == 0 or is_mixed_or_academic or (chinese_chars / max(total_chars, 1) < 0.3):
+                    # 纯英文、学术特征词或中英混合技术词 -> 学术组优先，兜底通用组
+                    if self.engines_academic:
+                        params["engines"] = self.engines_academic
+                    elif self.engines_general:
+                        params["engines"] = self.engines_general
+                else:
+                    # 主体为中文查询 -> 中文组
                     if self.engines_chinese:
                         params["engines"] = self.engines_chinese
-                elif self.engines_academic:
-                    # 英文查询 → 学术组优先
-                    params["engines"] = self.engines_academic
 
                 response = requests.get(
                     self.searxng_api_url, headers=headers, params=params, timeout=15
                 )
                 results = response.json()
 
-                # 若学术组结果不足且通用组可用，降级到通用组
-                if self.engines_academic and (self.engines_academic in params.get("engines", "")):
-                    result_count = len(results.get("results", []))
-                    if result_count < 3 and self.engines_general:
-                        params["engines"] = self.engines_general
-                        response = requests.get(
+                # 若当前引擎组结果不足且通用组可用，自动降级至通用组二次补充
+                curr_results = results.get("results", []) if isinstance(results, dict) else []
+                if len(curr_results) < 3 and self.engines_general and params.get("engines") != self.engines_general:
+                    params["engines"] = self.engines_general
+                    try:
+                        fallback_resp = requests.get(
                             self.searxng_api_url, headers=headers, params=params, timeout=15
                         )
-                        results = response.json()
+                        fallback_results = fallback_resp.json()
+                        if isinstance(fallback_results, dict) and "results" in fallback_results:
+                            curr_results.extend(fallback_results["results"])
+                    except Exception:
+                        pass
 
                 for r in results.get("results", []):
                     if self.is_valid_source(r["url"]) and r["url"] not in exclude_urls:

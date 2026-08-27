@@ -18,11 +18,21 @@ from pathlib import Path
 from openai import OpenAI
 
 # ── Configuration ──
-DEEPSEEK_API_KEY = "sk-c6d37a093be945c6bee7503357dd3c91"
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+if not DEEPSEEK_API_KEY:
+    try:
+        from cli.config_manager import StormConfig
+        DEEPSEEK_API_KEY = StormConfig().get("llm.deepseek.api_key")
+    except Exception:
+        pass
+
+if not DEEPSEEK_API_KEY:
+    print("Warning: DEEPSEEK_API_KEY is not set. Please set the environment variable or configure it in ~/.storm/config.toml", file=sys.stderr)
+
 TOPIC = "Vibe Coding as a Paradigm for AI-Assisted Software Development"
 OUTPUT_DIR = Path("./results_deepseek")
 
-client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+client = OpenAI(api_key=DEEPSEEK_API_KEY or "placeholder", base_url="https://api.deepseek.com")
 
 
 def llm_call(system: str, user: str, model: str = "deepseek-chat",

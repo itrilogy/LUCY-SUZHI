@@ -49,30 +49,18 @@ class Encoder:
         api_base: Optional[str] = None,
         model_name: Optional[str] = None,
     ):
-        self._backend = None
+        self._backend = backend or "local"
         self._local_model = None
-        self.embedding_model_name = None
+        self.embedding_model_name = model_name or "text-embedding-3-small"
         self.kargs = {}
         self.total_token_usage = 0
 
-        # 从 StormConfig 读取默认配置
-        config = {}
-        try:
-            from cli.config_manager import StormConfig
-            config = StormConfig().get_embed_config()
-        except Exception as e:
-            logger.warning(f"Cannot load StormConfig, fallback to local: {e}")
-            config = {"backend": "local", "local_model": "paraphrase-MiniLM-L6-v2"}
-
-        self._backend = backend or config.get("backend", "local")
-
         if self._backend == "local":
-            # 懒加载 SentenceTransformer（仅此分支引入 torch）
-            model_name = model_name or config.get("local_model", "paraphrase-MiniLM-L6-v2")
+            model = model_name or "paraphrase-MiniLM-L6-v2"
             try:
                 from sentence_transformers import SentenceTransformer as _ST
-                self._local_model = _ST(model_name)
-                logger.info(f"Encoder: local backend loaded ({model_name})")
+                self._local_model = _ST(model)
+                logger.info(f"Encoder: local backend loaded ({model})")
             except ImportError as e:
                 raise ImportError(
                     f"SentenceTransformer not installed. Run: pip install sentence-transformers\n{e}"
@@ -83,31 +71,31 @@ class Encoder:
                 raise ImportError("litellm not installed, cannot use openai backend")
             self.embedding_model_name = model_name or "text-embedding-3-small"
             self.kargs = {
-                "api_key": api_key or config.get("openai_api_key") or os.getenv("OPENAI_API_KEY"),
+                "api_key": api_key or os.getenv("OPENAI_API_KEY", ""),
             }
 
         elif self._backend == "compat":
             if not _LITELLM_AVAILABLE:
                 raise ImportError("litellm not installed, cannot use compat backend")
-            base = api_base or config.get("compat_base_url") or config.get("compat_base", "")
-            key = api_key or config.get("compat_api_key") or ""
-            model = model_name or config.get("compat_model", "text-embedding-3-small")
+            base = api_base or ""
+            key = api_key or ""
+            model = model_name or "text-embedding-3-small"
             self.embedding_model_name = f"openai/{model}"
             self.kargs = {"api_key": key, "api_base": base}
 
         elif self._backend == "litellm":
             if not _LITELLM_AVAILABLE:
                 raise ImportError("litellm not installed")
-            base = api_base or config.get("litellm_base_url", "")
-            key = api_key or config.get("litellm_api_key", "")
-            model = model_name or config.get("litellm_model", "text-embedding-3-small")
+            base = api_base or ""
+            key = api_key or ""
+            model = model_name or "text-embedding-3-small"
             self.embedding_model_name = model
             self.kargs = {"api_key": key, "api_base": base, "num_retries": 0}
 
         elif self._backend == "custom":
-            self._api_base = (api_base or config.get("api_base", "")).rstrip("/")
-            self._api_key = api_key or config.get("api_key", "")
-            self.embedding_model_name = model_name or config.get("model", "bge-m3")
+            self._api_base = (api_base or "").rstrip("/")
+            self._api_key = api_key or ""
+            self.embedding_model_name = model_name or "bge-m3"
             self._direct = True
 
         else:
@@ -120,7 +108,7 @@ class Encoder:
         if self._backend == "local":
             return self._encode_local(texts)
         if getattr(self, "_direct", False):
-            return self._encode_direct(texts)
+            return self._encode_direct_batch(texts)
         return self._encode_remote(texts, max_workers=max_workers)
 
     def _encode_local(self, texts):
@@ -128,35 +116,48 @@ class Encoder:
             return self._local_model.encode([texts])[0]
         return self._local_model.encode(texts)
 
-    def _encode_direct(self, texts):
-        """直连 Infinity 嵌入端点，不走 litellm。"""
+    def _encode_direct_batch(self, texts: Union[str, List[str]], batch_size: int = 32) -> np.ndarray:
+        """直连 Infinity/兼容嵌入端点，采用分批批处理降低网络 RTT。"""
         import requests
-        if isinstance(texts, str):
-            texts = [texts]
+
+        is_single = isinstance(texts, str)
+        text_list = [texts] if is_single else list(texts)
+
+        if not text_list:
+            return np.array([])
+
         dim = 1024
-        result = []
-        for t in texts:
-            if not t or not t.strip():
-                result.append(np.zeros(dim))
-                continue
+        all_embeddings = []
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+
+        for i in range(0, len(text_list), batch_size):
+            chunk = text_list[i : i + batch_size]
+            # 保证输入非空
+            clean_chunk = [t if (t and t.strip()) else " " for t in chunk]
             try:
                 r = requests.post(
                     f"{self._api_base}/embeddings",
-                    json={"input": t, "model": self.embedding_model_name},
+                    headers=headers,
+                    json={"input": clean_chunk, "model": self.embedding_model_name},
                     timeout=30,
                 )
                 if r.status_code == 200:
                     data = r.json()
-                    arr = data["data"][0]["embedding"]
-                    result.append(np.array(arr))
-                    dim = len(arr)
+                    for item in data.get("data", []):
+                        arr = item["embedding"]
+                        all_embeddings.append(np.array(arr))
+                        dim = len(arr)
                 else:
                     logger.error(f"Embedding HTTP {r.status_code}: {r.text[:100]}")
-                    result.append(np.zeros(dim))
+                    for _ in chunk:
+                        all_embeddings.append(np.zeros(dim))
             except Exception as e:
-                logger.error(f"Embedding error for {t[:30]}: {e}")
-                result.append(np.zeros(dim))
-        return np.array(result)
+                logger.error(f"Embedding batch error: {e}")
+                for _ in chunk:
+                    all_embeddings.append(np.zeros(dim))
+
+        res_array = np.array(all_embeddings)
+        return res_array[0] if is_single else res_array
 
     def _encode_remote(self, texts, max_workers=5):
         if isinstance(texts, str):

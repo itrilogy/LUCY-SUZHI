@@ -25,37 +25,31 @@ class Reranker:
         self,
         backend: Optional[str] = None,
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
         model_name: Optional[str] = None,
     ):
-        self._backend = "none"
-        self._api_key = ""
+        self._backend = backend or "none"
+        self._api_key = api_key or ""
+        self._api_base = (api_base or "").rstrip("/")
+        self._model = model_name or ""
         self._local_model = None
 
-        # 从 StormConfig 读取默认配置
-        config = {}
-        try:
-            from cli.config_manager import StormConfig
-            config = StormConfig().get_rerank_config()
-        except Exception as e:
-            logger.warning(f"Cannot load StormConfig, fallback to none: {e}")
-            config = {"backend": "none"}
-
-        self._backend = backend or config.get("backend", "none")
-
         if self._backend == "cohere":
-            self._api_key = api_key or config.get("cohere_api_key") or os.environ.get("COHERE_API_KEY", "")
+            self._api_key = self._api_key or os.environ.get("COHERE_API_KEY", "")
             if not self._api_key:
                 raise ValueError("Cohere Rerank requires an API key")
+            self._model = self._model or "rerank-english-v3.0"
             logger.info("Reranker: Cohere backend")
 
         elif self._backend == "jina":
-            self._api_key = api_key or config.get("jina_api_key") or os.environ.get("JINA_API_KEY", "")
+            self._api_key = self._api_key or os.environ.get("JINA_API_KEY", "")
             if not self._api_key:
                 raise ValueError("Jina Reranker requires an API key")
+            self._model = self._model or "jina-reranker-v2-base-multilingual"
             logger.info("Reranker: Jina backend")
 
         elif self._backend == "local":
-            model = model_name or config.get("local_model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+            model = self._model or "cross-encoder/ms-marco-MiniLM-L-6-v2"
             try:
                 from sentence_transformers import CrossEncoder
                 self._local_model = CrossEncoder(model)
@@ -66,27 +60,18 @@ class Reranker:
                 )
 
         elif self._backend == "litellm":
-            self._api_base = (api_base or config.get("litellm_base_url", "")).rstrip("/")
-            self._api_key = api_key or config.get("litellm_api_key", "") or ""
-            self._model = model_name or config.get("litellm_model", "") or ""
             if not self._api_base:
-                raise ValueError("LiteLLM rerank requires base_url")
+                raise ValueError("LiteLLM rerank requires api_base")
             logger.info(f"Reranker: LiteLLM backend ({self._api_base})")
 
         elif self._backend == "compat":
-            self._api_base = (api_base or config.get("compat_base_url", "")).rstrip("/")
-            self._api_key = api_key or config.get("compat_api_key", "") or ""
-            self._model = model_name or config.get("compat_model", "") or ""
             if not self._api_base:
-                raise ValueError("Compat rerank requires base_url")
+                raise ValueError("Compat rerank requires api_base")
             logger.info(f"Reranker: Compat backend ({self._api_base})")
 
         elif self._backend == "custom":
-            self._api_base = (api_base or config.get("api_base", "")).rstrip("/")
-            self._api_key = api_key or config.get("api_key", "") or ""
-            self._model = model_name or config.get("model", "") or ""
             if not self._api_base:
-                raise ValueError("Custom rerank requires base_url")
+                raise ValueError("Custom rerank requires api_base")
             logger.info(f"Reranker: custom backend ({self._api_base})")
 
         elif self._backend == "none":

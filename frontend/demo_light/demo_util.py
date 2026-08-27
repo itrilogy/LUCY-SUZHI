@@ -757,18 +757,31 @@ def set_storm_runner():
         st.session_state["runner"] = None
         return
 
-    # ── 嵌入与重排序（从 StormConfig 读取） ──
+    # ── 嵌入与重排序（从 StormConfig 读取并显式注入） ──
+    embed_cfg = config.get_embed_config()
     try:
         from knowledge_storm.encoder import Encoder as _StormEncoder
-        encoder = _StormEncoder()
+        encoder = _StormEncoder(
+            backend=embed_cfg.get("backend"),
+            api_key=embed_cfg.get("api_key"),
+            api_base=embed_cfg.get("api_base"),
+            model_name=embed_cfg.get("model"),
+        )
     except Exception as e:
         st.warning(f"嵌入模型初始化失败，使用默认: {e}")
         encoder = None
 
+    rerank_cfg = config.get_rerank_config()
     try:
         from knowledge_storm.reranker import Reranker as _StormReranker
-        reranker = _StormReranker()
-    except Exception:
+        reranker = _StormReranker(
+            backend=rerank_cfg.get("backend"),
+            api_key=rerank_cfg.get("api_key"),
+            api_base=rerank_cfg.get("api_base"),
+            model_name=rerank_cfg.get("model"),
+        )
+    except Exception as e:
+        st.warning(f"重排序模型初始化失败: {e}")
         reranker = None
 
     runner = STORMWikiRunner(engine_args, llm_configs, rm,

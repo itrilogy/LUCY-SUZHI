@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STORM 深度知识策展与长文研究引擎</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- 顶部导航栏 -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">⚡</div>
+        <div class="brand-text">
+          <h1>STORM</h1>
+          <span class="badge">Deep Research v2.1</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-sm btn-outline" id="openSettingsBtn">
+          <span class="btn-icon">⚙️</span> 系统与模型配置
+        </button>
+        <div class="header-status" id="headerStatus">
+          <span class="status-indicator"></span>
+          <span class="status-text">就绪</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 主控区域 -->
+    <main class="main-layout">
+      <!-- 左侧：输入与控制面板 -->
+      <aside class="control-panel">
+        <div class="panel-card">
+          <h2>🎯 研究主题设定</h2>
+          <div class="input-group">
+            <label for="topicInput">研究课题 / 论文主题</label>
+            <textarea id="topicInput" rows="3" placeholder="例如: Vibe Coding as a Paradigm for AI-Assisted Software Development"></textarea>
+          </div>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>深度研究模式</label>
+              <div class="toggle-switch">
+                <input type="checkbox" id="deepResearchToggle" checked>
+                <label for="deepResearchToggle"></label>
+              </div>
+            </div>
+            <div class="setting-item">
+              <label for="depthSelect">探索最大深度</label>
+              <select id="depthSelect">
+                <option value="1">1 层 (快速研报)</option>
+                <option value="2" selected>2 层 (标准学术)</option>
+                <option value="3">3 层 (深度挖掘)</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label for="perspectivesInput">专家视角数</label>
+              <input type="number" id="perspectivesInput" min="2" max="6" value="3">
+            </div>
+          </div>
+
+          <div class="input-group">
+            <label for="localDocsInput">本地语料库挂载 (可选路径)</label>
+            <input type="text" id="localDocsInput" placeholder="例如: ./raw_sources">
+          </div>
+
+          <div class="action-buttons">
+            <button class="btn btn-primary" id="startBtn">
+              <span class="btn-icon">🚀</span> 启动深度研究
+            </button>
+            <button class="btn btn-secondary" id="stopBtn" disabled>
+              <span class="btn-icon">⏹</span> 中断任务
+            </button>
+          </div>
+        </div>
+
+        <!-- 阶段状态指示轴 -->
+        <div class="panel-card">
+          <h2>📊 全流程演进轴</h2>
+          <div class="timeline" id="timeline">
+            <div class="timeline-step" data-step="1">
+              <div class="step-marker">1</div>
+              <div class="step-content">
+                <div class="step-title">视角发现 (Discovery)</div>
+                <div class="step-desc" id="step1Desc">待开始</div>
+              </div>
+            </div>
+            <div class="timeline-step" data-step="2">
+              <div class="step-marker">2</div>
+              <div class="step-content">
+                <div class="step-title">动态知识策展 (Curation)</div>
+                <div class="step-desc" id="step2Desc">待开始</div>
+              </div>
+            </div>
+            <div class="timeline-step" data-step="3">
+              <div class="step-marker">3</div>
+              <div class="step-content">
+                <div class="step-title">大纲拓扑编排 (Outline)</div>
+                <div class="step-desc" id="step3Desc">待开始</div>
+              </div>
+            </div>
+            <div class="timeline-step" data-step="4">
+              <div class="step-marker">4</div>
+              <div class="step-content">
+                <div class="step-title">正文并行起草 (Writing)</div>
+                <div class="step-desc" id="step4Desc">待开始</div>
+              </div>
+            </div>
+            <div class="timeline-step" data-step="5">
+              <div class="step-marker">5</div>
+              <div class="step-content">
+                <div class="step-title">冲突裁决与润色 (Polish)</div>
+                <div class="step-desc" id="step5Desc">待开始</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 实时思考轨迹日志 -->
+        <div class="panel-card log-card">
+          <h2>🧠 实时探索与思考轨迹</h2>
+          <div class="log-terminal" id="logTerminal">
+            <div class="log-line info">等待任务启动...</div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 右侧：成果展示与渲染视图 -->
+      <section class="content-panel">
+        <div class="content-header">
+          <div class="tabs">
+            <button class="tab-btn active" data-target="articleTab">📄 正文渲染</button>
+            <button class="tab-btn" data-target="citationsTab">📚 参考文献 (<span id="citationCount">0</span>)</button>
+            <button class="tab-btn" data-target="rawTab">📑 Markdown 源码</button>
+          </div>
+          <div class="export-actions">
+            <button class="btn btn-sm btn-outline" id="exportTypstBtn">
+              <span class="btn-icon">📐</span> Typst 论文
+            </button>
+            <button class="btn btn-sm btn-outline" id="exportSlidesBtn">
+              <span class="btn-icon">📊</span> Marp 幻灯片
+            </button>
+            <button class="btn btn-sm btn-outline" id="exportHtmlBtn">
+              <span class="btn-icon">🌐</span> 离线研报
+            </button>
+            <button class="btn btn-sm btn-outline" id="copyMdBtn">
+              <span class="btn-icon">📋</span> 复制 Markdown
+            </button>
+          </div>
+        </div>
+
+        <div class="content-body">
+          <div class="tab-pane active" id="articleTab">
+            <div class="article-render markdown-body" id="articleRender">
+              <div class="empty-state">
+                <div class="empty-icon">📝</div>
+                <h3>尚未生成研究成果</h3>
+                <p>在左侧输入研究主题并点击“启动深度研究”，全流程长文与证据链将在此实时呈现。</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="tab-pane" id="citationsTab">
+            <div class="citations-list" id="citationsList">
+              <div class="empty-state">暂无参考文献</div>
+            </div>
+          </div>
+
+          <div class="tab-pane" id="rawTab">
+            <textarea class="raw-markdown" id="rawMarkdown" readonly></textarea>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ⚙️ 系统与模型配置抽屉模态框 -->
+    <div class="modal-overlay" id="settingsModal">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>⚙️ STORM 系统配置与 Provider 中心</h2>
+          <button class="close-btn" id="closeSettingsBtn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <!-- 活跃厂商切换 -->
+          <div class="config-section">
+            <h3>🤖 大模型 (LLM) 配置</h3>
+            <div class="form-row">
+              <label>活跃 LLM 提供商</label>
+              <select id="activeLlmSelect"></select>
+            </div>
+            <div class="form-row">
+              <label>API 端点 (Base URL)</label>
+              <input type="text" id="llmBaseUrlInput">
+            </div>
+            <div class="form-row">
+              <label>API Key (密钥)</label>
+              <div class="key-input-wrapper">
+                <input type="password" id="llmApiKeyInput" placeholder="输入新密钥（留空保持当前配置）">
+                <button class="btn btn-sm btn-outline" id="toggleKeyVisibility">👁️</button>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>当前模型</label>
+              <div class="model-select-wrapper">
+                <input type="text" id="llmModelInput" placeholder="例如: deepseek-chat">
+                <button class="btn btn-sm btn-outline" id="probeLlmBtn">⚡ 探测并拉取模型</button>
+              </div>
+              <div class="probe-result" id="llmProbeResult"></div>
+            </div>
+          </div>
+
+          <div class="config-section">
+            <h3>🔍 检索引擎配置</h3>
+            <div class="form-row">
+              <label>活跃检索引擎</label>
+              <select id="activeSearchSelect"></select>
+            </div>
+            <div class="form-row">
+              <label>SearXNG API 地址</label>
+              <input type="text" id="searchApiUrlInput">
+            </div>
+            <div class="form-row">
+              <label>并发信号量上限</label>
+              <input type="number" id="searchMaxConcurrentInput" value="15">
+            </div>
+            <div class="form-row">
+              <button class="btn btn-sm btn-outline" id="probeSearchBtn">⚡ 探测检索连通性</button>
+              <div class="probe-result" id="searchProbeResult"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancelSettingsBtn">取消</button>
+          <button class="btn btn-primary" id="saveSettingsBtn">💾 保存并应用配置</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
