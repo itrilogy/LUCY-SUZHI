@@ -6,14 +6,14 @@
 
 ```mermaid
 graph TD
-    subgraph 现状痛点 (Current Limitations)
+    subgraph Sub_Current ["现状痛点 (Current Limitations)"]
         A[字符串弱类型注册表: extra='base_url:str=...'] -->|解析脆弱 / 扩展繁琐| B[硬编码厂商清单]
         C[多源配置割裂: CLI / Env / TOML / Defaults] -->|无明确继承链| D[配置覆盖逻辑混乱]
         E[静态填报 / 盲填模型名] -->|无端点模型发现 / 拼写错误| F[运行时 404/400 失败]
         G[仅命令行 --wizard 支持配置] -->|Web 端无法直接管理 / 需切终端| H[用户体验割裂]
     end
 
-    subgraph 深化演进设计 (Target Architecture)
+    subgraph Sub_Target ["深化演进设计 (Target Architecture)"]
         I[分层强类型配置引擎 Pydantic Settings] -->|明确优先级继承| J[统一单一真实源 Single Source of Truth]
         K[动态 Provider 注册与自动模型探测] -->|GET /v1/models 自动拉取| L[下拉即选 / RTT 延迟测算]
         M[安全脱敏与 Keyring 加密存储] -->|sk-c6d3****93be| N[零密钥明文泄露风险]

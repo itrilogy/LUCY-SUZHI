@@ -16,10 +16,10 @@ flowchart TD
     Reflexion --> Reviewer
     Score6D -- 评审通过 --> Exporters[4. 多渠道出版导出 MultiFormatExporter]
 
-    subgraph 多形态交付矩阵
-        Exporters --> MarpSlides[Marp 学术演讲幻灯片 .marp.md]
-        Exporters --> StandaloneHTML[独立自包含印刷级 HTML 研报]
-        Exporters --> TypstPDF[Typst IEEE/ACM 双栏学术论文]
+    subgraph Sub_Exports ["多形态交付矩阵"]
+        Exporters --> MarpSlides["Marp 学术演讲幻灯片 .marp.md"]
+        Exporters --> StandaloneHTML["自包含印刷级离线 HTML 研报"]
+        Exporters --> TypstPDF["Typst IEEE/ACM 双栏学术论文"]
     end
 
     Exporters --> SQLiteKB[(5. 纯本地 SQLite WAL 知识库沉淀 LocalKnowledgeHub)]

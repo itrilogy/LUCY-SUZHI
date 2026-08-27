@@ -6,14 +6,14 @@
 
 ```mermaid
 graph TD
-    subgraph 现状 (Legacy Heavyweight Stack)
+    subgraph Sub_Legacy ["现状 (Legacy Heavyweight Stack)"]
         A[重型运行时: PyTorch + Transformers + Scipy] -->|依赖体积 3.5GB+| B[冷启动慢 / 容器膨胀]
         C[同步阻塞 I/O + 线程池] -->|GIL 锁竞争 / C-C 无法中断| D[并发上限低 / 资源泄漏]
         E[DSPy 框架隐式黑盒] -->|Prompt 难以精确控制 / 调试困难| F[维护成本极高]
         G[Streamlit 单线程前端] -->|无原生双向流 / 全页重刷 / 状态撕裂| H[交互体验劣化]
     end
 
-    subgraph 现代化目标 (Modern Cloud-Native Stack)
+    subgraph Sub_Modern ["现代化目标 (Modern Cloud-Native Stack)"]
         I[纯异步 I/O: AsyncIO + HTTPX] -->|毫秒级高并发 / 原生取消| J[高吞吐与中断安全]
         K[轻量协议层: Pydantic v2 + Instructor / 原生 Client] -->|依赖体积 < 100MB| L[秒级启动 / 极简镜像]
         M[状态机持久化: SQLite WAL / DuckDB Checkpoint] -->|断点续传 / 全链路可追溯| N[生产级容错]
@@ -97,12 +97,12 @@ flowchart TD
     Start([输入研究主题]) --> Init[研究目标分解 & 意图树生成]
     Init --> MCTS{动态递归探索引擎}
     
-    subgraph 动态递归知识策展 (Dynamic Exploration Loop)
-        MCTS -->|广度拓展| SearchWeb[多源并行检索: Web + ArXiv + 本地代码/文档]
-        MCTS -->|深度下钻| Digging[针对疑点/冲突自发提问探索]
-        SearchWeb & Digging --> FactCheck[事实冲突检测与置信度裁决]
-        FactCheck --> FactGraph[(结构化事实图谱 Fact Graph)]
-        FactGraph -->|信息增益阈值评估| Convergence{信息充分度满足?}
+    subgraph Sub_Loop ["动态递归知识策展 (Dynamic Exploration Loop)"]
+        MCTS -->|广度拓展| SearchWeb["多源并行检索: Web + ArXiv + 本地代码/文档"]
+        MCTS -->|深度下钻| Digging["针对疑点/冲突自发提问探索"]
+        SearchWeb & Digging --> FactCheck["事实冲突检测与置信度裁决"]
+        FactCheck --> FactGraph[("结构化事实图谱 Fact Graph")]
+        FactGraph -->|信息增益阈值评估| Convergence{"信息充分度满足?"}
         Convergence -- 否: 发现新知识缺口 --> MCTS
     end
     

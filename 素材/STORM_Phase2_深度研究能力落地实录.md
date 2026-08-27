@@ -9,15 +9,15 @@ flowchart TD
     Init[输入主题] --> PersonaGen[视角矩阵生成]
     PersonaGen --> DeepTree{动态递归探索树 DynamicExplorationTree}
 
-    subgraph Phase 2 核心新特性
-        DeepTree -->|广度初探| Search[多源混合检索 HybridRetriever]
-        Search --> LocalBM25[本地文档/代码 BM25 词频索引]
-        Search --> WebSearx[外部 Web 智能三轨检索]
-        LocalBM25 & WebSearx --> RRF[RRF 倒数排名融合算法 Reciprocal Rank Fusion]
-        RRF --> GainCheck[信息增益率评估 Information Gain Check]
-        GainCheck -->|增益 >= 阈值| SubQuery[自发发现知识缺口并下钻 Branch & Deep Dive]
+    subgraph Sub_Phase2 ["Phase 2 核心新特性"]
+        DeepTree -->|广度初探| Search["多源混合检索 HybridRetriever"]
+        Search --> LocalBM25["本地文档/代码 BM25 词频索引"]
+        Search --> WebSearx["外部 Web 智能三轨检索"]
+        LocalBM25 & WebSearx --> RRF["RRF 倒数排名融合算法 Reciprocal Rank Fusion"]
+        RRF --> GainCheck["信息增益率评估 Information Gain Check"]
+        GainCheck -->|增益 >= 阈值| SubQuery["自发发现知识缺口并下钻 Branch & Deep Dive"]
         SubQuery --> DeepTree
-        GainCheck -->|知识饱和/深度达到上限| FactPool[(结构化事实池 FactPool)]
+        GainCheck -->|知识饱和/深度达到上限| FactPool[("结构化事实池 FactPool")]
     end
 
     FactPool --> Reconcile[事实冲突检测 ContradictionReconciler]

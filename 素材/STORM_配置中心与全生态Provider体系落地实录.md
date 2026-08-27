@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart TD
-    subgraph ConfigHub 配置四层继承与自动发现
+    subgraph Sub_ConfigHub ["ConfigHub 配置四层继承与自动发现"]
         UserEnv[1. 系统环境变量 .env] --> Hierarchy[四层优先级解析引擎]
         UserToml[2. 用户级 config.toml] --> Hierarchy
         Presets[3. 内置全生态厂商矩阵] --> Hierarchy
@@ -15,7 +15,7 @@ flowchart TD
         Probe --> AutoFill[自动拉取可用模型与测算 RTT 延迟]
     end
 
-    subgraph 检索性能跃迁 (Search Caching & Deep Extract)
+    subgraph Sub_Search ["检索性能跃迁 (Search Caching & Deep Extract)"]
         SearchQuery[研究节点检索查询] --> SQLiteCache{SQLite WAL 缓存命中?}
         SQLiteCache -- 命中 (<5ms) --> CachedData[返回缓存结果]
         SQLiteCache -- 未命中 --> PooledSearXNG[HTTP/2 复用连接池 SearXNG (15 并发)]

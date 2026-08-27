@@ -11,13 +11,13 @@ Phase 1 彻底攻克了上述限制，构建了纯异步轻量内核与 SQLite W
 
 ```mermaid
 flowchart TD
-    subgraph 传统架构 (Legacy Blocking Prototype)
+    subgraph Sub_Legacy ["传统架构 (Legacy Blocking Prototype)"]
         A[PyTorch + Transformers 3.5GB+] --> B[GIL 锁竞争 / 线程池死锁]
         B --> C[DSPy 隐式黑盒 Prompt]
         C --> D[内存临时状态 / 异常全盘报废]
     end
 
-    subgraph Phase 1 现代架构 (Async Lightweight Core)
+    subgraph Sub_Modern ["Phase 1 现代架构 (Async Lightweight Core)"]
         E[纯异步 HTTPX + AsyncIO <100MB] --> F[高并发协程 / 毫秒级信号中断]
         F --> G[标准 OpenAI 协议 + Pydantic v2 强契约]
         G --> H[SQLite WAL 状态机 / 100% 断点精确恢复]

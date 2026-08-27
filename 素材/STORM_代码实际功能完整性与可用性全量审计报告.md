@@ -6,7 +6,7 @@
 
 ```mermaid
 graph TD
-    subgraph 6 大模块全量自动化回归验证
+    subgraph Sub_Audit ["6 大模块全量自动化回归验证"]
         T1[1. test_async_core.py: 异步数据契约与断点恢复] --> Pass[100% 全部通过]
         T2[2. test_deep_research.py: 动态探索树与事实图谱] --> Pass
         T3[3. test_server_and_typst.py: FastAPI 服务与 Typst 排版] --> Pass

@@ -19,33 +19,33 @@ STORM 彻底重构了传统同步阻塞架构，基于 `HTTPX + AsyncIO + SQLite
 
 ```mermaid
 flowchart TD
-    User[用户输入主题 / 知识库] --> Discovery[1. 视角与专家矩阵发现 Persona Discovery]
-    Discovery --> DeepTree{2. 动态递归探索树 Tree-of-Thoughts}
+    User["用户输入主题 / 知识库"] --> Discovery["1. 视角与专家矩阵发现 Persona Discovery"]
+    Discovery --> DeepTree{"2. 动态递归探索树 Tree-of-Thoughts"}
 
-    subgraph 知识策展与混合检索 (Hybrid Curation)
-        DeepTree --> Retriever[自适应混合检索 HybridRetriever]
-        Retriever --> SearXNG[自建/私有 SearXNG 三轨路由 (15 并发)]
-        Retriever --> LocalBM25[本地语料库 BM25 精确检索]
-        SearXNG & LocalBM25 --> RRF[RRF 倒数排名融合算法]
-        RRF --> Cache[SQLite 本地查询缓存 (TTL 12h)]
-        RRF --> JinaReader[Jina Reader 二级全文深度提纯]
-        JinaReader --> GainCheck[信息增益率评估 >= 0.2]
-        GainCheck -->|发现争议/盲区| SubQuery[自发派生子问题下钻]
+    subgraph Sub_Curation ["知识策展与混合检索 (Hybrid Curation)"]
+        DeepTree --> Retriever["自适应混合检索 HybridRetriever"]
+        Retriever --> SearXNG["自建/私有 SearXNG 三轨路由 (15 并发)"]
+        Retriever --> LocalBM25["本地语料库 BM25 精确检索"]
+        SearXNG & LocalBM25 --> RRF["RRF 倒数排名融合算法"]
+        RRF --> Cache["SQLite 本地查询缓存 (TTL 12h)"]
+        RRF --> JinaReader["Jina Reader 二级全文深度提纯"]
+        JinaReader --> GainCheck["信息增益率评估 >= 0.2"]
+        GainCheck -->|发现争议/盲区| SubQuery["自发派生子问题下钻"]
         SubQuery --> DeepTree
     end
 
-    GainCheck --> FactPool[(结构化事实池 FactPool)]
-    FactPool --> Reconcile[事实图谱与跨信源分歧裁决 FactGraph]
-    FactPool & Reconcile --> Outline[3. 学术大纲拓扑生成 Outline]
-    Outline --> Writing[4. 章节并行起草与机制图表生成 (Mermaid/SVG)]
-    Writing --> Reviewer[5. 学术红蓝对抗评审与自适应反思修正 Reflexion]
-    Reviewer --> Polish[6. 最终润色与排版对齐]
+    GainCheck --> FactPool[("结构化事实池 FactPool")]
+    FactPool --> Reconcile["事实图谱与跨信源分歧裁决 FactGraph"]
+    FactPool & Reconcile --> Outline["3. 学术大纲拓扑生成 Outline"]
+    Outline --> Writing["4. 章节并行起草与机制图表生成 (Mermaid/SVG)"]
+    Writing --> Reviewer["5. 学术红蓝对抗评审与自适应反思修正 Reflexion"]
+    Reviewer --> Polish["6. 最终润色与排版对齐"]
 
-    subgraph 多渠道全形态出版矩阵 (Multi-Format Publishing)
-        Polish --> TypstPDF[IEEE/ACM 双栏学术论文 (.typ / PDF)]
-        Polish --> MarpSlides[Marp 学术演讲幻灯片 (.marp.md)]
-        Polish --> StandaloneHTML[自包含印刷级离线 HTML 研报]
-        Polish --> SQLiteKB[(本地 SQLite 知识资产沉淀与跨课题冷启动)]
+    subgraph Sub_Publishing ["多渠道全形态出版矩阵 (Multi-Format Publishing)"]
+        Polish --> TypstPDF["IEEE/ACM 双栏学术论文 (.typ / PDF)"]
+        Polish --> MarpSlides["Marp 学术演讲幻灯片 (.marp.md)"]
+        Polish --> StandaloneHTML["自包含印刷级离线 HTML 研报"]
+        Polish --> SQLiteKB[("本地 SQLite 知识资产沉淀与跨课题冷启动")]
     end
 ```
 

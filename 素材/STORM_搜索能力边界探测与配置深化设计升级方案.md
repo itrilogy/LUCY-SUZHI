@@ -23,10 +23,10 @@ flowchart TD
     CacheCheck -- 命中 (<5ms) --> ReturnCached[返回缓存结果]
     CacheCheck -- 未命中 --> FallbackLadder[2. 阶梯式检索与自适应熔断矩阵]
 
-    subgraph 阶梯式检索矩阵 (Fallback Ladder)
-        FallbackLadder --> Primary[第一梯队: 私有/自建 SearXNG]
-        Primary -->|超时 > 6s 或 429| Secondary[第二梯队: DuckDuckGo / Tavily]
-        Secondary -->|网络异常| Tertiary[第三梯队: 本地语料库 BM25 兜底]
+    subgraph Sub_Ladder ["阶梯式检索矩阵 (Fallback Ladder)"]
+        FallbackLadder --> Primary["第一梯队: 私有/自建 SearXNG"]
+        Primary -->|超时 > 6s 或 429| Secondary["第二梯队: DuckDuckGo / Tavily"]
+        Secondary -->|网络异常| Tertiary["第三梯队: 本地语料库 BM25 兜底"]
     end
 
     Primary & Secondary & Tertiary --> ContentDepthCheck{3. 摘要内容是否深度不足?}
