@@ -205,8 +205,8 @@ if __name__ == "__main__":
 # 编译 IEEE/ACM 双栏学术 PDF (需安装 Typst: brew install typst)
 typst compile results_async/<task_id>/paper.typ paper.pdf
 
-# 编译 Marp 学术演示文稿 (需安装 Marp CLI: npm install -g @marp-team/marp-cli)
-marp results_async/<task_id>/slides.marp.md -o presentation.pptx
+# 编译 Marp 学术演示文稿 (需安装 Marp CLI)
+npx @marp-team/marp-cli results_async/<task_id>/slides.marp.md -o presentation.pptx
 ```
 
 ---
@@ -261,6 +261,51 @@ python3 tests/test_full_pipeline_e2e.py      # 6 大阶段端到端全流程模�
 
 ---
 
+## 🙏 原项目致谢与学术引用 (Acknowledgements & Citations)
+
+本项目基于 **Stanford University Open Virtual Assistant Lab (OVAL)** 的原始科研探索 **STORM** 进行现代化工程重构与架构跃迁。谨向 Stanford OVAL 团队及相关论文作者致以诚挚敬意。
+
+若在学术研究或商业项目中使用了本代码库或其设计思路，请引用原始 Stanford 论文：
+
+```bibtex
+@inproceedings{shao-etal-2024-assisting,
+    title = "Assisting in Writing {W}ikipedia-like Articles From Scratch with Large Language Models",
+    author = "Shao, Yijia  and
+      Jiang, Yucheng  and
+      Kanell, Theodore  and
+      Xu, Peter  and
+      Khattab, Omar  and
+      Lam, Monica",
+    booktitle = "Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers)",
+    month = jun,
+    year = "2024",
+    address = "Mexico City, Mexico",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2024.naacl-long.347/",
+    doi = "10.18653/v1/2024.naacl-long.347",
+    pages = "6252--6278",
+}
+
+@inproceedings{jiang-etal-2024-unknown,
+    title = "Into the Unknown Unknowns: Engaged Human Learning through Participation in Language Model Agent Conversations",
+    author = "Jiang, Yucheng  and
+      Shao, Yijia  and
+      Ma, Dekun  and
+      Semnani, Sina  and
+      Lam, Monica",
+    booktitle = "Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing",
+    month = nov,
+    year = "2024",
+    address = "Miami, Florida, USA",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2024.emnlp-main.554/",
+    doi = "10.18653/v1/2024.emnlp-main.554",
+    pages = "9917--9955",
+}
+```
+
+---
+
 ## 📄 开源许可证 (License)
 
-本项目采用 Apache 2.0 开源许可证。
+本项目采用 **Apache 2.0 开源许可证**。详见 [LICENSE](LICENSE) 文件。
