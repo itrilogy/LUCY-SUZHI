@@ -21,20 +21,36 @@ class DiagramGenerator:
 
     async def generate_mermaid_diagram(self, topic: str, section_content: str) -> Optional[str]:
         """根据章节技术机制生成合法的 Mermaid 流程图或架构图代码块。"""
-        prompt = f"""Topic: {topic}
+        is_chinese = any('\u4e00' <= c <= '\u9fff' for c in topic)
+
+        if is_chinese:
+            prompt = f"""研究课题: {topic}
+章节段落节选:
+{section_content[:2000]}
+
+请为本章节的核心运作机制、架构或业务流程绘制一个专业、清晰的 Mermaid 流程图（flowchart TD 或 sequenceDiagram）。
+要求：
+1. 仅输出以 ```mermaid 开头并以 ``` 结尾的代码块。
+2. 节点文本必须使用中文，节点文本请用双引号包裹（例如：A["用户输入"] --> B["知识脚手架引擎"]），严禁在节点内出现裸括号或破坏 Mermaid 语法的特殊字符。
+3. 节点数量保持在 4 到 7 个，逻辑结构严密。"""
+        else:
+            prompt = f"""Topic: {topic}
 Section Excerpt:
 {section_content[:2000]}
 
 Generate a concise, professional Mermaid diagram (flowchart TD or sequenceDiagram) illustrating the core architecture, workflow, or mechanism described in the text.
 Requirements:
 1. Output ONLY the raw Mermaid code block starting with ```mermaid and ending with ```.
-2. Ensure node names do not contain special characters that break Mermaid syntax.
-3. Keep the diagram between 4 to 8 nodes."""
+2. Quote node texts properly with brackets (e.g. A["Input"] --> B["Process"]) to avoid syntax breakage.
+3. Keep the diagram between 4 to 7 nodes."""
 
         res = await self.llm.generate(prompt=prompt)
-        match = re.search(r"```mermaid\s*([\s\S]+?)\s*```", res)
+        match = re.search(r"```(?:mermaid)?\s*([\s\S]+?)\s*```", res)
         if match:
             clean_mermaid = match.group(1).strip()
+            # 移除开头的 mermaid 标识残留
+            if clean_mermaid.startswith("mermaid"):
+                clean_mermaid = clean_mermaid[7:].strip()
             return f"```mermaid\n{clean_mermaid}\n```"
         elif "flowchart" in res or "graph " in res or "sequenceDiagram" in res:
             return f"```mermaid\n{res.strip()}\n```"

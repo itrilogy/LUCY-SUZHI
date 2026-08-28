@@ -103,3 +103,43 @@ class WorkflowStateManager:
             if row:
                 return TaskCheckpoint.model_validate_json(row[0])
         return None
+
+    def list_checkpoints(self, limit: int = 50) -> list[dict]:
+        """列出所有持久化的任务简要元信息（按更新时间倒序）。"""
+        results = []
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT task_id, topic, stage, data_json, updated_at FROM storm_checkpoints ORDER BY updated_at DESC LIMIT ?;",
+                (limit,),
+            )
+            for row in cursor.fetchall():
+                t_id, topic, stage, data_raw, updated_at = row
+                try:
+                    data = json.loads(data_raw) if data_raw else {}
+                except Exception:
+                    data = {}
+                fact_count = len(data.get("fact_pool", {}).get("facts", []))
+                personas_count = len(data.get("personas", []))
+                has_outline = bool(data.get("outline"))
+                has_draft = bool(data.get("article_draft"))
+                article_len = len(data.get("article_draft", {}).get("content", "")) if has_draft else 0
+
+                results.append({
+                    "task_id": t_id,
+                    "topic": topic,
+                    "stage": stage,
+                    "personas_count": personas_count,
+                    "fact_count": fact_count,
+                    "has_outline": has_outline,
+                    "has_draft": has_draft,
+                    "article_len": article_len,
+                    "updated_at": updated_at,
+                })
+        return results
+
+    def delete_checkpoint(self, task_id: str) -> bool:
+        """从 SQLite 中物理删除指定任务 Checkpoint。"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM storm_checkpoints WHERE task_id = ?;", (task_id,))
+            conn.commit()
+            return cursor.rowcount > 0

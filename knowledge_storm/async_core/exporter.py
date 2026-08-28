@@ -5,6 +5,7 @@ STORM Async Core — 多渠道全格式一键导出引擎 (MultiFormatExporter)
 2. 一键生成自包含排版的独立离线 HTML 学术研报（内嵌暗黑/明亮打印样式，支持无损转存 Word/印刷）
 """
 
+import html
 import json
 import logging
 import re
@@ -74,29 +75,59 @@ class MultiFormatExporter:
         return "\n".join(slides)
 
     def generate_standalone_html_report(self, draft: ArticleDraft) -> str:
-        """生成自包含、零外部网络依赖的独立 HTML 研报（含印刷样式）。"""
-        topic = draft.topic
+        """生成自包含、零外部网络依赖且防 XSS 注入的独立 HTML 研报（含印刷样式）。"""
+        topic_escaped = html.escape(draft.topic)
         content_md = draft.polished_content or draft.content
 
-        # 简单将 Markdown 转为标准 HTML 标签
-        # H1, H2, H3, paragraphs, lists
+        # 提取 Mermaid 代码块
+        mermaid_blocks = []
+        def _save_mermaid(m):
+            idx = len(mermaid_blocks)
+            mermaid_blocks.append(m.group(1).strip())
+            return f"__MERMAID_BLOCK_{idx}__"
+
+        content_md = re.sub(r"```(?:mermaid)?\s*\n([\s\S]*?)\n```", _save_mermaid, content_md)
+
+        def _format_inline(text: str) -> str:
+            # 1. 基础 HTML 转义防 XSS
+            safe = html.escape(text)
+            # 2. 加粗 **text**
+            safe = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', safe)
+            # 3. 行内代码 `code`
+            safe = re.sub(r'`([^`]+)`', r'<code>\1</code>', safe)
+            # 4. 引用标号 [1]
+            safe = re.sub(r'\[(\d+)\]', r'<sup class="citation">[\1]</sup>', safe)
+            return safe
+
         html_body = []
         for line in content_md.split("\n"):
             line_s = line.strip()
+            if not line_s:
+                continue
+
+            if line_s.startswith("__MERMAID_BLOCK_"):
+                m_idx_match = re.search(r'__MERMAID_BLOCK_(\d+)__', line_s)
+                if m_idx_match:
+                    m_idx = int(m_idx_match.group(1))
+                    if m_idx < len(mermaid_blocks):
+                        raw_code = html.escape(mermaid_blocks[m_idx])
+                        html_body.append(f'<div class="mermaid-box"><pre class="mermaid">{raw_code}</pre></div>')
+                continue
+
             if line_s.startswith("# "):
-                html_body.append(f"<h1>{line_s[2:]}</h1>")
+                html_body.append(f"<h1>{_format_inline(line_s[2:])}</h1>")
             elif line_s.startswith("## "):
-                html_body.append(f"<h2>{line_s[3:]}</h2>")
+                html_body.append(f"<h2>{_format_inline(line_s[3:])}</h2>")
             elif line_s.startswith("### "):
-                html_body.append(f"<h3>{line_s[4:]}</h3>")
-            elif line_s.startswith("- ") or line_s.startswith("• "):
-                html_body.append(f"<li>{line_s[2:]}</li>")
+                html_body.append(f"<h3>{_format_inline(line_s[4:])}</h3>")
+            elif line_s.startswith("> "):
+                html_body.append(f"<blockquote><p>{_format_inline(line_s[2:])}</p></blockquote>")
+            elif line_s.startswith("- ") or line_s.startswith("• ") or line_s.startswith("* "):
+                html_body.append(f"<li>{_format_inline(line_s[2:])}</li>")
             elif line_s.startswith("| ") and "|" in line_s:
-                html_body.append(f"<code>{line_s}</code><br>")
-            elif line_s:
-                # 替换引用 [1] 为带样式的上标
-                formatted = re.sub(r'\[(\d+)\]', r'<sup class="citation">[\1]</sup>', line_s)
-                html_body.append(f"<p>{formatted}</p>")
+                html_body.append(f"<code>{html.escape(line_s)}</code><br>")
+            else:
+                html_body.append(f"<p>{_format_inline(line_s)}</p>")
 
         body_html_str = "\n".join(html_body)
 
@@ -104,7 +135,8 @@ class MultiFormatExporter:
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>{topic} - STORM 深度研报</title>
+  <title>{topic_escaped} - STORM 深度研报</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <style>
     @media print {{
       body {{ background: #fff !important; color: #000 !important; }}
@@ -124,8 +156,11 @@ class MultiFormatExporter:
     h2 {{ font-size: 20px; color: #818cf8; margin-top: 32px; border-bottom: 1px solid #1e293b; padding-bottom: 6px; }}
     h3 {{ font-size: 16px; color: #cbd5e1; margin-top: 24px; }}
     p {{ margin-bottom: 16px; text-align: justify; }}
+    blockquote {{ border-left: 3px solid #6366f1; background: #131b2e; padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }}
+    blockquote p {{ margin-bottom: 0; color: #cbd5e1; }}
     sup.citation {{ color: #a5b4fc; font-weight: bold; margin: 0 2px; }}
     .header-badge {{ background: #1e1b4b; color: #818cf8; padding: 4px 10px; border-radius: 4px; font-size: 12px; display: inline-block; margin-bottom: 16px; }}
+    .mermaid-box {{ background: #12161f; border: 1px solid #334155; border-radius: 8px; padding: 20px; margin: 24px 0; display: flex; justify-content: center; }}
     .citations-section {{ margin-top: 48px; border-top: 2px solid #334155; padding-top: 24px; }}
     .citation-item {{ font-size: 13px; color: #94a3b8; margin-bottom: 8px; }}
     .citation-item a {{ color: #818cf8; text-decoration: none; }}
@@ -138,11 +173,16 @@ class MultiFormatExporter:
     <h2>References & Sources</h2>
 """
         for idx, item in sorted(draft.citations.items(), key=lambda x: x[0]):
-            url = item.get("url", "#")
-            title = item.get("title", url)
-            html_doc += f'    <div class="citation-item">[{idx}] <a href="{url}" target="_blank">{title}</a></div>\n'
+            url = html.escape(item.get("url", "#"))
+            title = html.escape(item.get("title", url))
+            html_doc += f'    <div class="citation-item">[{idx}] <a href="{url}" target="_blank" rel="noopener noreferrer">{title}</a></div>\n'
 
         html_doc += """  </div>
+  <script>
+    if (window.mermaid) {
+      mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+    }
+  </script>
 </body>
 </html>"""
         return html_doc

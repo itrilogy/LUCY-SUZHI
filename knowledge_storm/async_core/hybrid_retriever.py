@@ -148,3 +148,8 @@ class HybridRetriever:
         sorted_urls = sorted(rrf_scores.keys(), key=lambda u: rrf_scores[u], reverse=True)
         final_results = [snippet_map[u] for u in sorted_urls[:top_k]]
         return final_results
+
+    async def close(self):
+        """关闭内嵌的 Web 检索引擎长连接。"""
+        if hasattr(self.web_retriever, "close"):
+            await self.web_retriever.close()

@@ -138,26 +138,41 @@ class ConfigHub:
         # 2. 读取用户 TOML 文件（若存在）
         if self.config_path.exists():
             try:
-                # 简单解析 TOML 语法
-                lines = self.config_path.read_text(encoding="utf-8").split("\n")
-                current_section = ""
-                for line in lines:
-                    line = line.strip()
-                    if line.startswith("[") and line.endswith("]"):
-                        current_section = line[1:-1].strip()
-                    elif "=" in line and not line.startswith("#"):
-                        key, val = [x.strip() for x in line.split("=", 1)]
-                        val = val.strip('"\'')
-                        if current_section == "llm" and key == "active":
-                            cfg.active_llm_provider = val
-                        elif current_section == "search" and key == "active_retriever":
-                            cfg.active_search_provider = val
-                        elif "." in key:
-                            p_id, prop = key.split(".", 1)
-                            if p_id in cfg.llm_providers and hasattr(cfg.llm_providers[p_id], prop):
-                                setattr(cfg.llm_providers[p_id], prop, val)
-                            elif p_id in cfg.search_providers and hasattr(cfg.search_providers[p_id], prop):
-                                setattr(cfg.search_providers[p_id], prop, val)
+                try:
+                    import tomllib
+                    with open(self.config_path, "rb") as f:
+                        toml_data = tomllib.load(f)
+                except ImportError:
+                    import tomli as tomllib
+                    with open(self.config_path, "rb") as f:
+                        toml_data = tomllib.load(f)
+
+                if "llm" in toml_data and isinstance(toml_data["llm"], dict):
+                    llm_sec = toml_data["llm"]
+                    if "active" in llm_sec:
+                        cfg.active_llm_provider = str(llm_sec["active"])
+
+                if "search" in toml_data and isinstance(toml_data["search"], dict):
+                    search_sec = toml_data["search"]
+                    if "active_retriever" in search_sec:
+                        cfg.active_search_provider = str(search_sec["active_retriever"])
+
+                # 处理 Provider 属性配置（支持顶层 [deepseek] 或嵌套在 [llm] / [search] 下）
+                llm_group = toml_data.get("llm", {})
+                for p_id, p_obj in cfg.llm_providers.items():
+                    p_dict = toml_data.get(p_id) or (llm_group.get(p_id) if isinstance(llm_group, dict) else None)
+                    if p_dict and isinstance(p_dict, dict):
+                        for k, v in p_dict.items():
+                            if hasattr(p_obj, k):
+                                setattr(p_obj, k, v)
+
+                search_group = toml_data.get("search", {})
+                for p_id, p_obj in cfg.search_providers.items():
+                    p_dict = toml_data.get(p_id) or (search_group.get(p_id) if isinstance(search_group, dict) else None)
+                    if p_dict and isinstance(p_dict, dict):
+                        for k, v in p_dict.items():
+                            if hasattr(p_obj, k):
+                                setattr(p_obj, k, v)
             except Exception as e:
                 logger.warning(f"Failed to parse user config file: {e}")
 

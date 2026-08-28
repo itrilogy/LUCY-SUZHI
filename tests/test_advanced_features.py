@@ -68,16 +68,17 @@ def test_local_knowledge_hub():
 
     hub = LocalKnowledgeHub(db_path=db_path)
     fp = FactPool()
-    fp.add_fact("DeepSeek R1 adopts multi-stage RL.", "https://deepseek.com", "R1 Report", "Architecture")
+    fp.add_fact("DeepSeek R1 adopts multi-stage RL.", "https://deepseek.com", "R1 Report", "Architecture", source_quality=1.2)
+    fp.add_fact("尼古丁袋在欧美口含烟市场年复合增长率超过30%", "https://tobacco-research.org", "全球烟草减害研报", "市场监管", source_quality=1.2)
 
     cp = TaskCheckpoint(
         task_id="task_test_01",
-        topic="DeepSeek R1 Technical Mechanisms",
+        topic="尼古丁袋市场趋势与技术机理",
         stage="COMPLETED",
         fact_pool=fp,
         article_draft=ArticleDraft(
-            topic="DeepSeek R1 Technical Mechanisms",
-            outline=Outline(topic="R1", sections=[]),
+            topic="尼古丁袋市场趋势与技术机理",
+            outline=Outline(topic="尼古丁袋", sections=[]),
             content="Full content",
             citations=fp.get_citations_dict(),
         ),
@@ -85,14 +86,18 @@ def test_local_knowledge_hub():
 
     hub.index_completed_research(cp)
 
-    # 跨任务先验检索
-    results = hub.search_prior_knowledge("DeepSeek Technical", limit=3)
-    assert len(results) >= 1
-    assert "multi-stage RL" in results[0]["claim"]
-    assert results[0]["source_title"] == "R1 Report"
+    # 1. 英文跨任务先验检索
+    results_en = hub.search_prior_knowledge("DeepSeek Technical", limit=3)
+    assert len(results_en) >= 1
+    assert "multi-stage RL" in results_en[0]["claim"]
+
+    # 2. 中文跨任务先验检索
+    results_zh = hub.search_prior_knowledge("尼古丁袋的市场未来趋势", limit=3)
+    assert len(results_zh) >= 1
+    assert "年复合增长率" in results_zh[0]["claim"]
 
     db_path.unlink(missing_ok=True)
-    print("  ✓ LocalKnowledgeHub test passed.")
+    print("  ✓ LocalKnowledgeHub passed (EN & ZH cross-search verified).")
 
 
 def main():

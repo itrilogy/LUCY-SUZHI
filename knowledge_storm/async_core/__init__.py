@@ -12,6 +12,7 @@ from .models import (
     Outline,
     DialogueTurn,
     ArticleDraft,
+    safe_extract_json,
 )
 from .llm import AsyncLLM
 from .retriever import AsyncSearXNG, SearchCacheManager
@@ -74,4 +75,5 @@ __all__ = [
     "SearchProviderInfo",
     "probe_llm_endpoint",
     "probe_search_endpoint",
+    "safe_extract_json",
 ]

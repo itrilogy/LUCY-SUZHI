@@ -110,7 +110,35 @@ class ContradictionReconciler:
             facts_text_list.append(f"[{idx}] (Source: {f.source_url}) {f.claim}")
         facts_block = "\n".join(facts_text_list)
 
-        prompt = f"""Topic: {topic}
+        is_chinese = any('\u4e00' <= c <= '\u9fff' for c in topic)
+
+        if is_chinese:
+            prompt = f"""研究课题: {topic}
+收集到的客观事实论据:
+{facts_block[:3500]}
+
+任务要求：
+1. 抽取 3~5 组核心“实体-关系-实体”三元组（例如：脚手架机制 -> [驱动] -> 知识建模复用）。实体和关系名称均使用中文。
+2. 扫描不同信源之间是否存在数据差异、性能指标矛盾或相反观点。若存在分歧，在 discrepancies 中输出。
+
+必须严格输出合法 JSON 格式：
+{{
+  "triples": [
+    {{"source": "实体A", "relation": "驱动/依赖/优化", "target": "实体B", "claim": "上下文主张", "source_index": 1}}
+  ],
+  "discrepancies": [
+    {{
+      "topic_aspect": "争议维度或技术指标",
+      "source_a_claim": "信源A的观点或数据",
+      "source_a_index": 1,
+      "source_b_claim": "信源B的观点或数据",
+      "source_b_index": 2,
+      "reconciliation_analysis": "为何两方数据或观点存在差异（如实验环境与真实业务差异）"
+    }}
+  ]
+}}"""
+        else:
+            prompt = f"""Topic: {topic}
 Collected Factual Evidence:
 {facts_block[:3500]}
 
@@ -141,8 +169,12 @@ Output strictly in JSON format matching this schema:
             response_format={"type": "json_object"},
         )
 
+        from .models import safe_extract_json
+        data = safe_extract_json(res)
+        if not data:
+            data = {}
+
         try:
-            data = json.loads(res)
             # 解析三元组
             for t in data.get("triples", []):
                 s_idx = t.get("source_index", 1)

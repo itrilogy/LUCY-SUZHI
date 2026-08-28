@@ -133,13 +133,21 @@ class AsyncSTORMPipeline:
             checkpoint.outline = outline
             checkpoint.stage = "OUTLINE"
             self.state_manager.save_checkpoint(checkpoint)
-            _notify("OUTLINE_COMPLETE", {"outline": outline.model_dump()})
+            _notify("OUTLINE_COMPLETE", {
+                "outline": outline.model_dump(),
+                "section_titles": [s.title for s in outline.sections]
+            })
 
         # ── 阶段 4: 事实图谱抽取与章节并行写作 ──
         if checkpoint.stage in ("OUTLINE",):
             _notify("WRITING_START")
             _notify("FACT_GRAPH_EXTRACTING")
             fact_graph = await self.reconciler.extract_graph_and_reconcile(topic, checkpoint.fact_pool)
+            _notify("FACT_GRAPH_COMPLETE", {
+                "triples_count": len(fact_graph.edges),
+                "sample_triples": [f"{e.source_id} -[{e.relation}]-> {e.target_id}" for e in fact_graph.edges[:3]],
+                "conflicts_count": len(fact_graph.discrepancies)
+            })
 
             article_draft = await self._stage_write_article(
                 topic, checkpoint.outline, checkpoint.fact_pool, fact_graph, progress_callback
@@ -154,19 +162,25 @@ class AsyncSTORMPipeline:
             _notify("REVIEW_START")
             if self.enable_review:
                 review_report = await self.reviewer.review_article(checkpoint.article_draft)
-                _notify("REVIEW_COMPLETE", {"score": review_report.overall_score, "passed": review_report.is_passed})
+                _notify("REVIEW_COMPLETE", {
+                    "score": review_report.overall_score,
+                    "passed": review_report.is_passed,
+                    "dimension_scores": [d.model_dump() for d in review_report.dimension_scores],
+                    "suggestions": review_report.critical_suggestions[:2]
+                })
                 if not review_report.is_passed:
                     _notify("REFLEXION_ACTIVE", {"suggestions": review_report.critical_suggestions})
                     checkpoint.article_draft = await self.reviewer.apply_reflexion_patch(
                         checkpoint.article_draft, review_report, checkpoint.fact_pool
                     )
+                    _notify("REFLEXION_PATCH_APPLIED", {"new_len": len(checkpoint.article_draft.content)})
 
             _notify("POLISH_START")
             polished_draft = await self._stage_polish_article(checkpoint.article_draft)
             checkpoint.article_draft = polished_draft
             checkpoint.stage = "COMPLETED"
             self.state_manager.save_checkpoint(checkpoint)
-            _notify("COMPLETED", {"tokens_used": self.llm.total_tokens_used})
+            _notify("COMPLETED", {"tokens_used": self.llm.total_tokens_used, "article_len": len(checkpoint.article_draft.content)})
 
         # 自动落盘与多格式导出、知识库索引
         self._dump_results_and_exports(checkpoint)
@@ -196,11 +210,18 @@ Format your output strictly as numbered lines:
                 personas.append(Persona(name=match.group(1).strip(), description=match.group(2).strip()))
 
         if not personas:
-            personas = [
-                Persona(name="Core Technologist", description="Focuses on underlying architecture and mechanisms"),
-                Persona(name="Industry Specialist", description="Focuses on industry impact and real-world adoption"),
-                Persona(name="Critical Analyst", description="Focuses on limitations, security risks, and challenges"),
-            ]
+            if is_chinese:
+                personas = [
+                    Persona(name="核心技术专家", description="聚焦底层架构、工艺配方与核心运作机制"),
+                    Persona(name="产业与市场分析师", description="关注全球市场规模、商业化落地与产业竞争格局"),
+                    Persona(name="政策监管与风险研判员", description="评估合规框架、法律准入、安全性挑战与未来趋势"),
+                ]
+            else:
+                personas = [
+                    Persona(name="Core Technologist", description="Focuses on underlying architecture and mechanisms"),
+                    Persona(name="Industry Specialist", description="Focuses on industry impact and real-world adoption"),
+                    Persona(name="Critical Analyst", description="Focuses on limitations, security risks, and challenges"),
+                ]
         return personas[: self.max_perspectives]
 
     async def _stage_curate_deep_exploration(
@@ -252,7 +273,9 @@ Ask a specific, insightful research question related to the topic from your pers
                 if not question:
                     break
 
-                search_query = f"{topic} {question}"[:80]
+                clean_topic = topic.replace("的研究", "").replace("的作用", "").strip()[:20]
+                clean_q = question.replace("？", "").replace("?", "").strip()[:20]
+                search_query = f"{clean_topic} {clean_q}".strip()[:35]
                 snippets = await self.retriever.search(search_query, top_k=self.search_top_k)
 
                 snippets_text = "\n".join([f"[{s.title}] {s.content}" for s in snippets])
@@ -271,6 +294,8 @@ Synthesize a factual, informative response answering the question with source ev
                             url=s.url,
                             title=s.title,
                             perspective=persona.name,
+                            source_quality=getattr(s, "source_quality", 1.0),
+                            confidence=1.0,
                         )
 
                 turn_record = DialogueTurn(
@@ -295,8 +320,21 @@ Synthesize a factual, informative response answering the question with source ev
         return fact_pool, dialogues
 
     async def _stage_generate_outline(self, topic: str, fact_pool: FactPool) -> Outline:
+        is_chinese = any('\u4e00' <= c <= '\u9fff' for c in topic)
         facts_summary = "\n".join([f"- {f.claim[:150]}" for f in fact_pool.facts[:30]])
-        prompt = f"""Topic: {topic}
+
+        if is_chinese:
+            prompt = f"""研究课题: {topic}
+已采集的核心事实与线索:
+{facts_summary[:3000] if facts_summary else '（初步探索阶段）'}
+
+请为该课题设计一份严谨、具备深度学术/产业洞察价值的文章大纲。
+要求：
+1. 包含 4-6 个核心一级章节（## 章节名）和若干二级小节（### 小节名）。
+2. 章节标题必须使用规范专业的中文，严禁使用英文占位符或中英混杂。
+3. 严格以 Markdown 标题层级格式输出，不要包含前言废话。"""
+        else:
+            prompt = f"""Topic: {topic}
 Key Facts & Insights Collected:
 {facts_summary[:3000]}
 
@@ -309,21 +347,58 @@ Format as Markdown headings (## Section Title, ### Subsection Title). Do not inc
             line = line.strip()
             if line.startswith("## ") and not line.startswith("###"):
                 title = line.replace("## ", "").strip()
-                if title.lower() not in ("references", "see also"):
+                if title.lower() not in ("references", "see also", "参考文献", "引用"):
                     sections.append(OutlineSection(level=1, title=title))
             elif line.startswith("### ") and sections:
                 title = line.replace("### ", "").strip()
                 sections[-1].subsections.append(OutlineSection(level=2, title=title))
 
         if not sections:
-            sections = [
-                OutlineSection(level=1, title="Overview and Background"),
-                OutlineSection(level=1, title="Key Mechanisms and Architecture"),
-                OutlineSection(level=1, title="Applications and Impact"),
-                OutlineSection(level=1, title="Challenges and Future Directions"),
-            ]
+            if is_chinese:
+                sections = [
+                    OutlineSection(level=1, title="一、产业背景与技术起源"),
+                    OutlineSection(level=1, title="二、核心作用机理与工艺架构"),
+                    OutlineSection(level=1, title="三、全球市场格局与商业化进展"),
+                    OutlineSection(level=1, title="四、合规监管与未来演进趋势"),
+                ]
+            else:
+                sections = [
+                    OutlineSection(level=1, title="Overview and Background"),
+                    OutlineSection(level=1, title="Key Mechanisms and Architecture"),
+                    OutlineSection(level=1, title="Applications and Impact"),
+                    OutlineSection(level=1, title="Challenges and Future Directions"),
+                ]
 
         return Outline(topic=topic, sections=sections)
+
+    async def _stage_generate_abstract(self, topic: str, full_content: str) -> str:
+        """为全篇研报生成结构化学术摘要与关键词。"""
+        is_chinese = any('\u4e00' <= c <= '\u9fff' for c in topic)
+        content_sample = full_content[:3000]
+
+        if is_chinese:
+            prompt = f"""研究课题: {topic}
+研报核心正文摘录:
+{content_sample}
+
+请为本篇深度研报提炼撰写一段结构化摘要（200-300字）与 3-5 个核心关键词。
+格式严格遵循：
+> **摘要**：[此处为200-300字的研究背景、核心机制、主要结论与未来趋势综述]
+> 
+> **关键词**：词1；词2；词3；词4"""
+        else:
+            prompt = f"""Topic: {topic}
+Article Excerpt:
+{content_sample}
+
+Write a structured executive abstract (150-250 words) and 3-5 keywords.
+Format:
+> **Abstract**: [150-250 words summary]
+> 
+> **Keywords**: kw1, kw2, kw3"""
+
+        abstract_text = await self.llm.generate(prompt=prompt)
+        return abstract_text.strip()
 
     async def _stage_write_article(
         self,
@@ -344,32 +419,77 @@ Format as Markdown headings (## Section Title, ### Subsection Title). Do not inc
             indexed_sources.append(f"[{idx}] {title}: {content}")
         sources_text = "\n".join(indexed_sources[:40])
 
+        is_chinese = any('\u4e00' <= c <= '\u9fff' for c in topic)
+
         async def _write_single_section(sec: OutlineSection, is_core_sec: bool = False) -> str:
+            if progress_cb:
+                progress_cb("SECTION_WRITING_START", {"section": sec.title, "is_core": is_core_sec})
+
             sub_titles = ", ".join([sub.title for sub in sec.subsections])
-            sub_hint = f" Cover subtopics: {sub_titles}." if sub_titles else ""
-            prompt = f"""Topic: {topic}
+            sub_hint = f"（重点阐述子课题：{sub_titles}）" if sub_titles else ""
+
+            if is_chinese:
+                prompt = f"""研究课题: {topic}
+章节标题: {sec.title}{sub_hint}
+可用参考文献与客观事实证据:
+{sources_text[:3500] if sources_text else '（请基于该领域的权威专业知识、行业数据与科学机制进行深入推导论述）'}
+
+请为本章节撰写专业、严谨、深度的长文学术论述。
+要求：
+1. 紧扣章节主题，深度阐述核心机制、发展脉络、行业现状或技术指标，严禁空话套话或占位符。
+2. 若上方提供了文献证据并包含编号（如 [1], [2]），请在关键事实与数据处准确标注标号；若无特定文献，请直接进行逻辑严密的正文论述。
+3. 篇幅 600-1200 字，语言地道专业。直接输出 Markdown 正文段落，不要重复输出章节主标题。"""
+            else:
+                prompt = f"""Topic: {topic}
 Section Title: {sec.title}{sub_hint}
 Available Citations and Source Evidence:
-{sources_text[:3500]}
+{sources_text[:3500] if sources_text else '(Synthesize from established domain knowledge)'}
 
-Write a thorough, professional, and deep section on this topic.
+Write a thorough, professional, and deep academic section.
 Requirements:
-1. Every major fact or claim MUST be cited with the exact citation number like [1], [2], etc., matching the provided sources above.
-2. Maintain high academic rigor, avoiding empty filler.
-3. Write 400-800 words. Start directly with the section body."""
+1. Ground facts and arguments deeply, avoiding fluff.
+2. Cite references like [1], [2] if available.
+3. Write 500-1000 words. Start directly with the section body."""
 
-            content = await self.llm.generate(prompt=prompt, max_tokens=1500)
+            content = await self.llm.generate(prompt=prompt, max_tokens=2000)
+
+            # 若模型偶发返回字数不足，触发带指导的二次重试
+            if len(content.strip()) < 80:
+                retry_prompt = f"请针对主题《{topic}》中的《{sec.title}》章节，撰写一篇至少 600 字的深度学术与产业分析正文，包含具体的背景、机制与未来研判。"
+                content = await self.llm.generate(prompt=retry_prompt, max_tokens=2000)
+
+            # 1. 标题净化守卫：剥离大模型在正文开头自主生成的重复标题行
+            clean_content = content.strip()
+            clean_content = re.sub(r'^(?:#{1,3}\s+[^\n]+\n+)+', '', clean_content).strip()
+
+            # 2. 截断智能探测与自动收尾：若末尾以未完成字符结束，做一次平滑闭合
+            if clean_content and clean_content[-1] not in ('。', '！', '？', '.', '!', '?', '"', '”', '`', '\n'):
+                # 检查末尾是否处于断句状态
+                last_line = clean_content.splitlines()[-1] if clean_content.splitlines() else ""
+                if len(last_line) > 10 and not any(last_line.endswith(p) for p in ('。', '！', '？', '.', '!', '?')):
+                    closure_prompt = f"请为以下学术论述段落续写最后一句完整的总结句（不超过 50 字，以句号完整结束）：\n{clean_content[-200:]}"
+                    try:
+                        closure = await self.llm.generate(prompt=closure_prompt, max_tokens=100)
+                        closure_clean = closure.strip().replace("\n", " ")
+                        if closure_clean:
+                            clean_content += " " + closure_clean
+                    except Exception:
+                        clean_content += "。"
 
             # 若启用图表生成且为核心架构章节，自动生成 Mermaid 流程图
             diagram_md = ""
             if self.enable_diagrams and is_core_sec:
-                d_block = await self.diagram_gen.generate_mermaid_diagram(topic, content)
+                d_block = await self.diagram_gen.generate_mermaid_diagram(topic, clean_content)
                 if d_block:
                     diagram_md = f"\n\n{d_block}\n\n"
 
             if progress_cb:
-                progress_cb("SECTION_WRITTEN", {"section": sec.title})
-            return f"## {sec.title}\n\n{content}\n{diagram_md}"
+                progress_cb("SECTION_WRITTEN", {
+                    "section": sec.title,
+                    "char_count": len(clean_content),
+                    "has_diagram": bool(diagram_md)
+                })
+            return f"## {sec.title}\n\n{clean_content}\n{diagram_md}"
 
         section_tasks = []
         for idx, s in enumerate(outline.sections):
@@ -377,12 +497,17 @@ Requirements:
             section_tasks.append(_write_single_section(s, is_core))
 
         section_texts = await asyncio.gather(*section_tasks)
-        full_article = f"# {topic}\n\n" + "\n\n".join(section_texts)
+        full_body = "\n\n".join(section_texts)
+
+        # 生成学术摘要并挂载至根标题下方
+        abstract_block = await self._stage_generate_abstract(topic, full_body)
+        full_article = f"# {topic}\n\n{abstract_block}\n\n" + full_body
 
         if fact_graph and fact_graph.discrepancies:
             full_article += fact_graph.render_discrepancy_table_markdown()
 
-        bib_lines = ["\n\n## References\n"]
+        ref_title = "## 参考文献" if is_chinese else "## References"
+        bib_lines = [f"\n\n{ref_title}\n"]
         for idx, item in sorted(citations.items(), key=lambda x: x[0]):
             bib_lines.append(f"[{idx}] [{item['title']}]({item['url']})")
         full_article += "\n".join(bib_lines)
@@ -395,8 +520,15 @@ Requirements:
         )
 
     async def _stage_polish_article(self, draft: ArticleDraft) -> ArticleDraft:
-        cleaned = draft.content.replace("$", "\\$")
+        """执行结构一致性润色、全局标题去重与段落排版规范化。"""
+        draft.record_version("Before final polish")
+        cleaned = draft.content
+        # 1. 物理级抹平连续重复的 Markdown 标题（例如连续出现两次 ## 一、xxx）
+        cleaned = re.sub(r'^(#{1,3}\s+[^\n]+)\n+(?:#{1,3}\s+[^\n]+\n+)+', r'\1\n\n', cleaned, flags=re.MULTILINE)
+        # 2. 保证段落间空行规范
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         draft.polished_content = cleaned
+        draft.content = cleaned
         return draft
 
     def _dump_results_and_exports(self, checkpoint: TaskCheckpoint):

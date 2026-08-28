@@ -36,12 +36,42 @@ class AsyncLLM:
         self.timeout = timeout
         self.max_retries = max_retries
         self.total_tokens_used = 0
+        self._client: Optional[httpx.AsyncClient] = None
 
         # 标准化 endpoint
         if not self.api_base.endswith("/v1") and "deepseek.com" not in self.api_base:
             self.endpoint = f"{self.api_base}/v1/chat/completions"
         else:
             self.endpoint = f"{self.api_base}/chat/completions"
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """获取或复用实例级长连接池。"""
+        if self._client is None or self._client.is_closed:
+            try:
+                self._client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+                    http2=True,
+                )
+            except Exception as e:
+                logger.debug(f"HTTP/2 init failed for LLM client ({e}), fallback to HTTP/1.1")
+                self._client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+                    http2=False,
+                )
+        return self._client
+
+    async def close(self):
+        """显式关闭连接池。"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
 
     async def generate(
         self,
@@ -70,7 +100,7 @@ class AsyncLLM:
         max_tokens: Optional[int] = None,
         response_format: Optional[Dict[str, str]] = None,
     ) -> str:
-        """异步多轮对话。"""
+        """异步多轮对话（连接池复用 + 指数退避重试）。"""
         headers = {
             "Content-Type": "application/json",
         }
@@ -87,29 +117,34 @@ class AsyncLLM:
         if response_format:
             payload["response_format"] = response_format
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for attempt in range(1, self.max_retries + 1):
-                try:
-                    resp = await client.post(self.endpoint, headers=headers, json=payload)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        usage = data.get("usage", {})
-                        self.total_tokens_used += usage.get("total_tokens", 0)
-                        content = data["choices"][0]["message"]["content"]
-                        return content.strip()
-                    elif resp.status_code in (429, 500, 502, 503, 504):
-                        # 可重试错误
-                        logger.warning(
-                            f"LLM API temporary error (status {resp.status_code}) attempt {attempt}/{self.max_retries}: {resp.text[:100]}"
-                        )
-                    else:
-                        logger.error(f"LLM API client error (status {resp.status_code}): {resp.text[:200]}")
-                        return ""
-                except Exception as e:
-                    logger.warning(f"LLM API network error attempt {attempt}/{self.max_retries}: {e}")
+        client = self._get_client()
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = await client.post(self.endpoint, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    usage = data.get("usage", {})
+                    self.total_tokens_used += usage.get("total_tokens", 0)
+                    content = data["choices"][0]["message"]["content"]
+                    return content.strip()
+                elif resp.status_code in (429, 500, 502, 503, 504):
+                    logger.warning(
+                        f"LLM API temporary error (status {resp.status_code}) attempt {attempt}/{self.max_retries}: {resp.text[:100]}"
+                    )
+                elif resp.status_code in (401, 403):
+                    err_msg = f"LLM API 鉴权失败 (HTTP {resp.status_code}): {resp.text[:150]}。请前往右上角【配置中心】检查并更新有效的 API Key！"
+                    logger.error(err_msg)
+                    raise RuntimeError(err_msg)
+                else:
+                    logger.error(f"LLM API client error (status {resp.status_code}): {resp.text[:200]}")
+                    return ""
+            except RuntimeError:
+                raise
+            except Exception as e:
+                logger.warning(f"LLM API network error attempt {attempt}/{self.max_retries}: {e}")
 
-                if attempt < self.max_retries:
-                    await asyncio.sleep(2 ** (attempt - 1))
+            if attempt < self.max_retries:
+                await asyncio.sleep(2 ** (attempt - 1))
 
         logger.error(f"LLM API failed after {self.max_retries} attempts.")
         return ""
@@ -120,7 +155,7 @@ class AsyncLLM:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
-        """异步流式输出 Token。"""
+        """异步流式输出 Token（连接池复用）。"""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -133,8 +168,12 @@ class AsyncLLM:
             "stream": True,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        client = self._get_client()
+        try:
             async with client.stream("POST", self.endpoint, headers=headers, json=payload) as response:
+                if response.status_code != 200:
+                    logger.error(f"LLM stream error (status {response.status_code})")
+                    return
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
                         data_str = line[6:].strip()
@@ -147,3 +186,5 @@ class AsyncLLM:
                                 yield delta
                         except Exception:
                             continue
+        except Exception as e:
+            logger.error(f"LLM stream network error: {e}")

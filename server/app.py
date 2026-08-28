@@ -130,9 +130,33 @@ def get_runtime_components(local_docs_dir: Optional[str] = None):
     return llm, retriever
 
 
+MAX_CONCURRENT_RESEARCH = 3
+
+STAGE_PROGRESS_MAP = {
+    "INIT": 0,
+    "DISCOVERY_START": 5,
+    "DISCOVERY_COMPLETE": 15,
+    "CURATION_START": 20,
+    "DEEP_RESEARCH_TREE_ACTIVE": 25,
+    "DEEP_EXPLORATION_NODE_START": 35,
+    "CURATION_COMPLETE": 50,
+    "OUTLINE_START": 55,
+    "OUTLINE_COMPLETE": 65,
+    "WRITING_START": 70,
+    "FACT_GRAPH_COMPLETE": 75,
+    "SECTION_WRITTEN": 80,
+    "WRITING_COMPLETE": 85,
+    "REVIEW_START": 88,
+    "REVIEW_COMPLETE": 92,
+    "POLISH_START": 95,
+    "COMPLETED": 100,
+    "DONE": 100,
+}
+
+
 async def _run_research_job(task_id: str, req: ResearchStartRequest):
     """后台异步执行研究任务并推入 SSE 队列。"""
-    queue = TASK_EVENT_QUEUES.setdefault(task_id, asyncio.Queue())
+    queue = TASK_EVENT_QUEUES.setdefault(task_id, asyncio.Queue(maxsize=2000))
     llm, retriever = get_runtime_components(req.local_docs_dir)
 
     pipeline = AsyncSTORMPipeline(
@@ -147,7 +171,14 @@ async def _run_research_job(task_id: str, req: ResearchStartRequest):
     )
 
     def _event_cb(stage: str, data: Any):
-        payload = {"task_id": task_id, "stage": stage, "data": data}
+        progress = STAGE_PROGRESS_MAP.get(stage, None)
+        payload = {
+            "task_id": task_id,
+            "stage": stage,
+            "data": data,
+            "tokens_used": llm.total_tokens_used,
+            "progress_pct": progress,
+        }
         try:
             queue.put_nowait(payload)
         except Exception:
@@ -159,24 +190,70 @@ async def _run_research_job(task_id: str, req: ResearchStartRequest):
             task_id=task_id,
             progress_callback=_event_cb,
         )
-        queue.put_nowait({"task_id": task_id, "stage": "DONE", "data": {"article_len": len(article.content)}})
+        queue.put_nowait({
+            "task_id": task_id,
+            "stage": "DONE",
+            "progress_pct": 100,
+            "tokens_used": llm.total_tokens_used,
+            "data": {"article_len": len(article.content)},
+        })
+    except asyncio.CancelledError:
+        logger.info(f"Task {task_id} cancelled by user.")
+        queue.put_nowait({"task_id": task_id, "stage": "STOPPED", "data": {"message": "任务已手动终止"}})
     except Exception as e:
         logger.error(f"Task {task_id} failed: {e}", exc_info=True)
         queue.put_nowait({"task_id": task_id, "stage": "ERROR", "data": {"error": str(e)}})
+    finally:
+        RUNNING_TASKS.pop(task_id, None)
+        await llm.close()
+        if hasattr(retriever, "close"):
+            await retriever.close()
 
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
     index_file = STATIC_DIR / "index.html"
     if index_file.exists():
-        return index_file.read_text(encoding="utf-8")
+        return HTMLResponse(
+            content=index_file.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+        )
     return "<h1>STORM Web UI Initializing...</h1>"
+
+
+# ── 任务管理 REST API ───────────────────────────────────────────────────
+
+@app.get("/api/v1/tasks")
+async def list_tasks(limit: int = Query(50, ge=1, le=100)):
+    """获取所有历史与进行中的任务列表（按最近更新时间排序）。"""
+    checkpoints = state_manager.list_checkpoints(limit=limit)
+    running_set = {t_id for t_id, task in RUNNING_TASKS.items() if not task.done()}
+    
+    tasks_with_status = []
+    for cp in checkpoints:
+        t_id = cp["task_id"]
+        is_running = t_id in running_set
+        display_stage = "RUNNING" if is_running else cp["stage"]
+        tasks_with_status.append({
+            **cp,
+            "is_running": is_running,
+            "display_stage": display_stage,
+        })
+    return {"tasks": tasks_with_status, "total": len(tasks_with_status)}
 
 
 @app.post("/api/v1/research/start")
 async def start_research(req: ResearchStartRequest):
+    # 限制并发运行任务上限
+    active_running = [t for t in RUNNING_TASKS.values() if not t.done()]
+    if len(active_running) >= MAX_CONCURRENT_RESEARCH:
+        raise HTTPException(
+            status_code=429,
+            detail=f"当前已有 {len(active_running)} 个深度研究任务正在并发执行，已达到服务器安全上限 ({MAX_CONCURRENT_RESEARCH})。请等待其完成或手动终止后再发起。",
+        )
+
     task_id = req.resume_task_id or f"storm_{uuid.uuid4().hex[:8]}"
-    TASK_EVENT_QUEUES[task_id] = asyncio.Queue()
+    TASK_EVENT_QUEUES[task_id] = asyncio.Queue(maxsize=500)
 
     t = asyncio.create_task(_run_research_job(task_id, req))
     RUNNING_TASKS[task_id] = t
@@ -189,23 +266,94 @@ async def start_research(req: ResearchStartRequest):
     }
 
 
+@app.post("/api/v1/research/stop/{task_id}")
+async def stop_research(task_id: str):
+    """手动中断指定的后台研究任务。"""
+    t = RUNNING_TASKS.get(task_id)
+    if t and not t.done():
+        t.cancel()
+        RUNNING_TASKS.pop(task_id, None)
+        return {"status": "stopped", "task_id": task_id}
+    return {"status": "not_running", "task_id": task_id}
+
+
+@app.delete("/api/v1/tasks/{task_id}")
+async def delete_task(task_id: str):
+    """彻底物理清理指定任务的所有持久化快照、知识库索引、内存队列与磁盘成果。"""
+    t = RUNNING_TASKS.get(task_id)
+    if t and not t.done():
+        t.cancel()
+        RUNNING_TASKS.pop(task_id, None)
+
+    TASK_EVENT_QUEUES.pop(task_id, None)
+    deleted_cp = state_manager.delete_checkpoint(task_id)
+
+    # 清理本地 SQLite 知识库索引
+    from knowledge_storm.async_core.local_knowledge_hub import LocalKnowledgeHub
+    kb_hub = LocalKnowledgeHub(db_path=ROOT_DIR / "results_async" / "local_knowledge.db")
+    kb_hub.delete_task_records(task_id)
+
+    # 物理清理磁盘结果目录
+    task_dir = ROOT_DIR / "results_async" / task_id
+    if task_dir.exists():
+        import shutil
+        shutil.rmtree(task_dir, ignore_errors=True)
+
+    return {
+        "status": "deleted",
+        "task_id": task_id,
+        "deleted_checkpoint": deleted_cp,
+        "cleared_kb": True,
+        "cleared_files": True,
+    }
+
+
 @app.get("/api/v1/research/stream/{task_id}")
 async def stream_research_events(task_id: str):
+    """建立或重连 SSE 实时事件流（支持已有状态快照重放）。"""
     queue = TASK_EVENT_QUEUES.get(task_id)
-    if not queue:
-        cp = state_manager.load_checkpoint(task_id)
-        if cp:
-            async def _single_done_gen():
-                yield f"data: {json.dumps({'stage': 'COMPLETED', 'data': {'topic': cp.topic}})}\n\n"
-            return StreamingResponse(_single_done_gen(), media_type="text/event-stream")
-        raise HTTPException(status_code=404, detail="Task not found")
+    cp = state_manager.load_checkpoint(task_id)
 
     async def event_generator():
+        # 1. 如果存在已持久化的 Checkpoint，先回放状态快照给新连进来的客户端
+        if cp:
+            snapshot_event = {
+                "task_id": task_id,
+                "stage": "STAGE_SNAPSHOT",
+                "data": {
+                    "topic": cp.topic,
+                    "stage": cp.stage,
+                    "personas": [p.model_dump() for p in cp.personas],
+                    "fact_count": len(cp.fact_pool.facts) if cp.fact_pool else 0,
+                    "has_outline": bool(cp.outline),
+                    "has_draft": bool(cp.article_draft),
+                    "updated_at": cp.updated_at,
+                }
+            }
+            yield f"data: {json.dumps(snapshot_event, ensure_ascii=False)}\n\n"
+
+        # 2. 如果任务已在后台执行结束，补发 DONE 事件后退出
+        is_running = task_id in RUNNING_TASKS and not RUNNING_TASKS[task_id].done()
+        if not is_running and cp and cp.stage in ("COMPLETED", "DONE"):
+            done_event = {
+                "task_id": task_id,
+                "stage": "DONE",
+                "data": {
+                    "article_len": len(cp.article_draft.content) if cp.article_draft else 0
+                }
+            }
+            yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+            return
+
+        # 3. 若任务正在执行中，从队列流式消费新事件
+        if not queue:
+            return
+
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=45.0)
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("stage") in ("DONE", "ERROR"):
+                if event.get("stage") in ("DONE", "ERROR", "STOPPED"):
                     break
             except asyncio.TimeoutError:
                 yield ": heartbeat\n\n"
@@ -252,6 +400,7 @@ async def export_typst(task_id: str):
     return {
         "status": "success",
         "file_path": str(out_file.absolute()),
+        "download_url": f"/api/v1/download/{task_id}/paper.typ",
         "typst_source": typst_code,
     }
 
@@ -273,6 +422,7 @@ async def export_slides(task_id: str):
     return {
         "status": "success",
         "file_path": str(out_file.absolute()),
+        "download_url": f"/api/v1/download/{task_id}/slides.marp.md",
         "slides_markdown": slides_md,
     }
 
@@ -294,8 +444,35 @@ async def export_standalone_html(task_id: str):
     return {
         "status": "success",
         "file_path": str(out_file.absolute()),
+        "download_url": f"/api/v1/download/{task_id}/report_standalone.html",
         "html_content": html_content,
     }
+
+
+@app.get("/api/v1/download/{task_id}/{filename}")
+async def download_task_file(task_id: str, filename: str):
+    """通用文件直接下载端点。"""
+    allowed_files = [
+        "paper.typ",
+        "slides.marp.md",
+        "report_standalone.html",
+        "article.md",
+        "outline.md",
+        "fact_pool.json",
+        "citations.json",
+    ]
+    if filename not in allowed_files:
+        raise HTTPException(status_code=400, detail="Invalid filename requested")
+
+    file_path = ROOT_DIR / "results_async" / task_id / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Requested file not found on disk")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=f"{task_id}_{filename}",
+        media_type="application/octet-stream",
+    )
 
 
 # ── 配置中心 API ───────────────────────────────────────────────────────
@@ -324,7 +501,25 @@ async def save_config(req: SaveConfigRequest):
         config_hub.save_config(new_cfg)
         return {"status": "saved", "active_llm": new_cfg.active_llm_provider, "active_search": new_cfg.active_search_provider}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid config payload: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/config/spam_stats")
+async def get_spam_stats():
+    """获取当前内容农场与垃圾站规则库统计。"""
+    from knowledge_storm.async_core.retriever import _GLOBAL_SPAM_FILTER
+    return {
+        "total_rules": len(_GLOBAL_SPAM_FILTER.spam_domains),
+        "local_file": str(_GLOBAL_SPAM_FILTER.local_file),
+    }
+
+
+@app.post("/api/v1/config/sync_spam_list")
+async def sync_spam_blocklist():
+    """一键异步同步云端开源内容农场与垃圾站 Blocklist 规则。"""
+    from knowledge_storm.async_core.retriever import _GLOBAL_SPAM_FILTER
+    res = await _GLOBAL_SPAM_FILTER.sync_remote_blocklists()
+    return {"status": "success", "data": res}
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000):

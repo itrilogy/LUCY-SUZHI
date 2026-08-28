@@ -7,8 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=2.3.0">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 </head>
 <body>
   <div class="app-container">
@@ -22,8 +23,14 @@
         </div>
       </div>
       <div class="header-actions">
+        <button class="btn btn-sm btn-outline" id="openTasksBtn">
+          <span class="btn-icon">📁</span> 任务列表 (<span id="taskBadgeCount">0</span>)
+        </button>
+        <button class="btn btn-sm btn-primary" id="newTaskBtn">
+          <span class="btn-icon">➕</span> 新建研究
+        </button>
         <button class="btn btn-sm btn-outline" id="openSettingsBtn">
-          <span class="btn-icon">⚙️</span> 系统与模型配置
+          <span class="btn-icon">⚙️</span> 配置中心
         </button>
         <div class="header-status" id="headerStatus">
           <span class="status-indicator"></span>
@@ -82,7 +89,17 @@
 
         <!-- 阶段状态指示轴 -->
         <div class="panel-card">
-          <h2>📊 全流程演进轴</h2>
+          <div class="panel-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h2 style="margin: 0;">📊 全流程演进轴</h2>
+            <span class="token-badge" style="background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.3); padding: 3px 8px; border-radius: 6px; font-size: 12px;">🪙 <b id="tokenCountDisplay">0</b> Tokens</span>
+          </div>
+          <div class="overall-progress-wrapper" style="background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 8px;">
+            <div class="overall-progress-bar" id="overallProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #6366f1, #38bdf8); transition: width 0.4s ease;"></div>
+          </div>
+          <div class="progress-meta-row" style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; margin-bottom: 16px;">
+            <span id="progressPctText">进度: 0%</span>
+            <span id="estimatedRemainingText">待启动</span>
+          </div>
           <div class="timeline" id="timeline">
             <div class="timeline-step" data-step="1">
               <div class="step-marker">1</div>
@@ -241,8 +258,26 @@
         </div>
       </div>
     </div>
+
+    <!-- 📁 研究任务管理抽屉模态框 -->
+    <div class="modal-overlay" id="tasksModal">
+      <div class="modal-card modal-lg">
+        <div class="modal-header">
+          <h2>📁 STORM 研究任务中心</h2>
+          <div class="header-tools">
+            <button class="btn btn-sm btn-outline" id="refreshTasksBtn">🔄 刷新列表</button>
+            <button class="close-btn" id="closeTasksBtn">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body">
+          <div class="tasks-container" id="tasksContainer">
+            <div class="empty-state">正在加载任务列表...</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2.4.0"></script>
 </body>
 </html>
