@@ -56,7 +56,9 @@ def test_multiformat_exporter():
     # 2. 验证 Standalone HTML
     html_report = exporter.generate_standalone_html_report(draft)
     assert "<!DOCTYPE html>" in html_report
-    assert "Modern AI Architectures - STORM 深度研报" in html_report
+    assert "Modern AI Architectures" in html_report
+    assert "溯知" in html_report
+    assert "jsdelivr" not in html_report
     assert 'class="citation"' in html_report
     print("  ✓ MultiFormatExporter test passed.")
 

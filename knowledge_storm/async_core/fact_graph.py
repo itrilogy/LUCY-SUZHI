@@ -178,7 +178,9 @@ Output strictly in JSON format matching this schema:
             # 解析三元组
             for t in data.get("triples", []):
                 s_idx = t.get("source_index", 1)
-                url = fact_pool.facts[s_idx - 1].source_url if 0 < s_idx <= len(fact_pool.facts) else "https://storm-synthesis.org"
+                if not (0 < s_idx <= len(fact_pool.facts)):
+                    continue
+                url = fact_pool.facts[s_idx - 1].source_url
                 graph.add_relation(
                     source_name=t.get("source", "Concept A"),
                     target_name=t.get("target", "Concept B"),

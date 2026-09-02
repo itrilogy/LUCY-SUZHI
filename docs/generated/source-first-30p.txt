@@ -1,0 +1,1500 @@
+# ===== FILE: knowledge_storm/async_core/__init__.py =====
+"""
+STORM Async Core 现代轻量异步内核 (Phase 1 ~ Phase 3 + ConfigHub + Advanced Plans 1,2,4 & Local KB)
+基于 httpx + asyncio + pydantic 实现，零 PyTorch / Transformers / DSPy 运行时强依赖。
+"""
+
+from .models import (
+    Persona,
+    FactEntry,
+    FactPool,
+    SearchSnippet,
+    OutlineSection,
+    Outline,
+    DialogueTurn,
+    ArticleDraft,
+    safe_extract_json,
+)
+from .llm import AsyncLLM
+from .retriever import AsyncSearXNG, SearchCacheManager
+from .hybrid_retriever import HybridRetriever, LocalBM25Index
+from .deep_exploration import DynamicExplorationTree, ExplorationNode
+from .fact_graph import FactGraph, GraphNode, GraphEdge, DiscrepancyItem, ContradictionReconciler
+from .encoder_reranker import AsyncEncoder, AsyncReranker
+from .state_manager import WorkflowStateManager, TaskCheckpoint
+from .pipeline import AsyncSTORMPipeline
+from .typst_compiler import TypstCompiler
+from .diagram_generator import DiagramGenerator
+from .reviewer import AcademicReviewer, AcademicReviewReport, ReviewDimensionScore
+from .exporter import MultiFormatExporter
+from .local_knowledge_hub import LocalKnowledgeHub
+from .config_hub import (
+    ConfigHub,
+    StormSystemConfig,
+    LLMProviderInfo,
+    SearchProviderInfo,
+    probe_llm_endpoint,
+    probe_search_endpoint,
+)
+
+__all__ = [
+    "Persona",
+    "FactEntry",
+    "FactPool",
+    "SearchSnippet",
+    "OutlineSection",
+    "Outline",
+    "DialogueTurn",
+    "ArticleDraft",
+    "AsyncLLM",
+    "AsyncSearXNG",
+    "SearchCacheManager",
+    "HybridRetriever",
+    "LocalBM25Index",
+    "DynamicExplorationTree",
+    "ExplorationNode",
+    "FactGraph",
+    "GraphNode",
+    "GraphEdge",
+    "DiscrepancyItem",
+    "ContradictionReconciler",
+    "AsyncEncoder",
+    "AsyncReranker",
+    "WorkflowStateManager",
+    "TaskCheckpoint",
+    "AsyncSTORMPipeline",
+    "TypstCompiler",
+    "DiagramGenerator",
+    "AcademicReviewer",
+    "AcademicReviewReport",
+    "ReviewDimensionScore",
+    "MultiFormatExporter",
+    "LocalKnowledgeHub",
+    "ConfigHub",
+    "StormSystemConfig",
+    "LLMProviderInfo",
+    "SearchProviderInfo",
+    "probe_llm_endpoint",
+    "probe_search_endpoint",
+    "safe_extract_json",
+]
+
+# ===== FILE: knowledge_storm/async_core/models.py =====
+"""
+STORM Async Core — 数据模型定义 (Pydantic v2)
+定义全流程统一的强类型数据契约，消除隐式字典传递与序列化歧义。
+"""
+
+from typing import Dict, List, Optional, Any, Union, Set
+from pydantic import BaseModel, Field, PrivateAttr
+from datetime import datetime
+
+
+class Persona(BaseModel):
+    """研究视角 / 专家角色"""
+    name: str = Field(description="角色或视角名称")
+    description: str = Field(description="视角的关注重点与专业背景")
+
+    def to_perspective_string(self) -> str:
+        return f"{self.name}: {self.description}"
+
+    @classmethod
+    def from_string(cls, text: str) -> "Persona":
+        if ":" in text:
+            name, desc = text.split(":", 1)
+            return cls(name=name.strip(), description=desc.strip())
+        return cls(name=text.strip(), description=text.strip())
+
+
+class SearchSnippet(BaseModel):
+    """检索返回的片段证据"""
+    url: str
+    title: str = ""
+    content: str = ""
+    engine: str = ""
+    source_quality: float = Field(default=1.0, description="信源权威度评级: 1.2(学术), 1.0(综合), 0.8(论坛)")
+
+
+class FactEntry(BaseModel):
+    """原子事实记录"""
+    fact_id: str
+    claim: str = Field(description="陈述的事实内容")
+    source_url: str = Field(description="来源 URL")
+    source_title: str = ""
+    confidence: float = 1.0
+    perspective: str = ""
+    source_quality: float = 1.0
+    extracted_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class FactPool(BaseModel):
+    """事实池聚合"""
+    facts: List[FactEntry] = Field(default_factory=list)
+    url_to_index: Dict[str, int] = Field(default_factory=dict)
+    url_to_title: Dict[str, str] = Field(default_factory=dict)
+    _norm_hashes: Set[str] = PrivateAttr(default_factory=set)
+
+    def add_fact(
+        self,
+        claim: str,
+        url: str,
+        title: str = "",
+        perspective: str = "",
+        source_quality: float = 1.0,
+        confidence: float = 1.0,
+    ) -> Optional[FactEntry]:
+        """向事实池沉淀原子事实（带 O(1) 标准化去重守卫与信源权威度评级）。"""
+        clean_claim = claim.strip()
+        if not clean_claim or len(clean_claim) < 5:
+            return None
+
+        # 1. 精确标准化去重（剔除首尾标点、统一空白）
+        norm_claim = "".join(clean_claim.split()).lower().rstrip("。，；.,;")
+        
+        # 懒加载初始化已有 facts 的哈希缓存（反序列化恢复时有用）
+        if not self._norm_hashes and self.facts:
+            self._norm_hashes = {"".join(f.claim.split()).lower().rstrip("。，；.,;") for f in self.facts}
+
+        if norm_claim in self._norm_hashes:
+            for existing in self.facts:
+                if "".join(existing.claim.split()).lower().rstrip("。，；.,;") == norm_claim:
+                    return existing
+            return None
+
+        self._norm_hashes.add(norm_claim)
+
+        # 2. 跨信源 URL 索引建档
+        if url not in self.url_to_index:
+            self.url_to_index[url] = len(self.url_to_index) + 1
+            self.url_to_title[url] = title or url
+
+        fact_id = f"fact_{len(self.facts) + 1}"
+        entry = FactEntry(
+            fact_id=fact_id,
+            claim=clean_claim,
+            source_url=url,
+            source_title=title or self.url_to_title.get(url, ""),
+            perspective=perspective,
+            source_quality=source_quality,
+            confidence=confidence,
+        )
+        self.facts.append(entry)
+        return entry
+
+    def get_citations_dict(self) -> Dict[int, Dict[str, Any]]:
+        """生成带引用编号的参考文献字典"""
+        citations = {}
+        for url, idx in self.url_to_index.items():
+            snippets = [f.claim for f in self.facts if f.source_url == url]
+            citations[idx] = {
+                "url": url,
+                "title": self.url_to_title.get(url, url),
+                "snippets": snippets,
+            }
+        return citations
+
+
+class OutlineSection(BaseModel):
+    """大纲章节节点"""
+    level: int = 1  # 1 为 H1, 2 为 H2, 3 为 H3
+    title: str
+    description: str = ""
+    subsections: List["OutlineSection"] = Field(default_factory=list)
+
+
+class Outline(BaseModel):
+    """整篇文章大纲"""
+    topic: str
+    sections: List[OutlineSection] = Field(default_factory=list)
+
+    def to_markdown(self) -> str:
+        lines = [f"# {self.topic}\n"]
+        def _render_section(sec: OutlineSection):
+            prefix = "#" * (sec.level + 1)
+            lines.append(f"{prefix} {sec.title}")
+            if sec.description:
+                lines.append(f"<!-- {sec.description} -->")
+            for sub in sec.subsections:
+                _render_section(sub)
+        for s in self.sections:
+            _render_section(s)
+        return "\n".join(lines)
+
+
+class DialogueTurn(BaseModel):
+    """专家问答单轮记录"""
+    persona: str
+    question: str
+    queries_issued: List[str] = Field(default_factory=list)
+    search_snippets: List[SearchSnippet] = Field(default_factory=list)
+    answer: str
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class ArticleDraft(BaseModel):
+    """文章生成结果"""
+    topic: str
+    outline: Outline
+    content: str
+    citations: Dict[int, Dict[str, Any]] = Field(default_factory=dict)
+    polished_content: Optional[str] = None
+    history_versions: List[str] = Field(default_factory=list, description="历史版本快照")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+    def record_version(self, description: str = ""):
+        """记录当前正文快照到版本历史。"""
+        current_text = self.polished_content or self.content
+        if current_text and (not self.history_versions or self.history_versions[-1] != current_text):
+            self.history_versions.append(current_text)
+
+
+def safe_extract_json(text: str) -> Optional[Dict[str, Any]]:
+    """鲁棒的 JSON 解析器：自动剥离 <think> 标签、Markdown 代码围栏并容错提取最外层有效 JSON。"""
+    import json
+    import re
+    if not text or not isinstance(text, str):
+        return None
+    
+    # 1. 过滤 <think> 标签
+    cleaned = re.sub(r'<think>[\s\S]*?<\/think>', '', text).strip()
+    
+    # 2. 尝试直接解析
+    try:
+        res = json.loads(cleaned)
+        if isinstance(res, dict):
+            return res
+    except Exception:
+        pass
+    
+    # 3. 提取 ```json ... ``` 代码块
+    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', cleaned, re.IGNORECASE)
+    if json_match:
+        try:
+            res = json.loads(json_match.group(1).strip())
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+            
+    # 4. 正则寻找最外层 { ... }
+    brace_match = re.search(r'(\{[\s\S]*\})', cleaned)
+    if brace_match:
+        try:
+            res = json.loads(brace_match.group(1).strip())
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+            
+    return None
+
+# ===== FILE: knowledge_storm/async_core/llm.py =====
+"""
+STORM Async Core — 纯异步 LLM 客户端
+基于 httpx.AsyncClient 实现，支持 OpenAI 标准 API、DeepSeek、Ollama 及兼容端点。
+完全消除重型 DSPy 与 LiteLLM 代谢。
+"""
+
+import asyncio
+import json
+import logging
+from typing import Dict, List, Optional, Any, AsyncGenerator
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+class AsyncLLM:
+    """现代纯异步 LLM 调用引擎。"""
+
+    def __init__(
+        self,
+        model: str = "deepseek-chat",
+        api_key: str = "",
+        api_base: str = "https://api.deepseek.com",
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        top_p: float = 0.9,
+        timeout: float = 60.0,
+        max_retries: int = 3,
+    ):
+        self.model = model
+        self.api_key = api_key
+        self.api_base = api_base.rstrip("/")
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.top_p = top_p
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.total_tokens_used = 0
+        self._client: Optional[httpx.AsyncClient] = None
+
+        # 标准化 endpoint
+        if not self.api_base.endswith("/v1") and "deepseek.com" not in self.api_base:
+            self.endpoint = f"{self.api_base}/v1/chat/completions"
+        else:
+            self.endpoint = f"{self.api_base}/chat/completions"
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """获取或复用实例级长连接池。"""
+        if self._client is None or self._client.is_closed:
+            try:
+                self._client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+                    http2=True,
+                )
+            except Exception as e:
+                logger.debug(f"HTTP/2 init failed for LLM client ({e}), fallback to HTTP/1.1")
+                self._client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+                    http2=False,
+                )
+        return self._client
+
+    async def close(self):
+        """显式关闭连接池。"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str = "You are a helpful and precise academic research assistant.",
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """异步生成文本（单次响应）。"""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        return await self.chat(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """异步多轮对话（连接池复用 + 指数退避重试）。"""
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+            "top_p": self.top_p,
+        }
+        if response_format:
+            payload["response_format"] = response_format
+
+        client = self._get_client()
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = await client.post(self.endpoint, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    usage = data.get("usage", {})
+                    self.total_tokens_used += usage.get("total_tokens", 0)
+                    content = data["choices"][0]["message"]["content"]
+                    return content.strip()
+                elif resp.status_code in (429, 500, 502, 503, 504):
+                    logger.warning(
+                        f"LLM API temporary error (status {resp.status_code}) attempt {attempt}/{self.max_retries}: {resp.text[:100]}"
+                    )
+                elif resp.status_code in (401, 403):
+                    err_msg = f"LLM API 鉴权失败 (HTTP {resp.status_code}): {resp.text[:150]}。请前往右上角【配置中心】检查并更新有效的 API Key！"
+                    logger.error(err_msg)
+                    raise RuntimeError(err_msg)
+                else:
+                    logger.error(f"LLM API client error (status {resp.status_code}): {resp.text[:200]}")
+                    return ""
+            except RuntimeError:
+                raise
+            except Exception as e:
+                logger.warning(f"LLM API network error attempt {attempt}/{self.max_retries}: {e}")
+
+            if attempt < self.max_retries:
+                await asyncio.sleep(2 ** (attempt - 1))
+
+        logger.error(f"LLM API failed after {self.max_retries} attempts.")
+        return ""
+
+    async def stream(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncGenerator[str, None]:
+        """异步流式输出 Token（连接池复用）。"""
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+            "stream": True,
+        }
+
+        client = self._get_client()
+        try:
+            async with client.stream("POST", self.endpoint, headers=headers, json=payload) as response:
+                if response.status_code != 200:
+                    logger.error(f"LLM stream error (status {response.status_code})")
+                    return
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                            delta = chunk["choices"][0]["delta"].get("content", "")
+                            if delta:
+                                yield delta
+                        except Exception:
+                            continue
+        except Exception as e:
+            logger.error(f"LLM stream network error: {e}")
+
+# ===== FILE: knowledge_storm/async_core/config_hub.py =====
+"""
+STORM Async Core — 统一强类型配置中心与 Provider 管理矩阵 (ConfigHub)
+功能：
+1. 四层优先级配置继承：CLI Flags > OS Env (.env) > User TOML (~/.storm/config.toml) > Built-in Presets
+2. 全生态 Provider 预置矩阵 (DeepSeek, SiliconFlow, OpenAI, Ollama, SearXNG, DuckDuckGo, Tavily)
+3. 异步端点自动探测与网络 RTT 延迟测算 (Probe & Model Auto-Discovery)
+4. 凭证脱敏与安全持久化
+"""
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Union
+from pydantic import BaseModel, Field
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+USER_CONFIG_PATH = Path.home() / ".storm" / "config.toml"
+
+
+class LLMProviderInfo(BaseModel):
+    provider_id: str
+    name: str
+    base_url: str
+    api_key: str = ""
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    timeout: float = 60.0
+    is_custom: bool = False
+
+
+class SearchProviderInfo(BaseModel):
+    provider_id: str
+    name: str
+    api_url: str
+    api_key: str = ""
+    engines_academic: str = "semantic_scholar,arxiv,pubmed,google_scholar"
+    engines_chinese: str = "google,bing,baidu,zhihu"
+    engines_general: str = "google,bing,duckduckgo"
+    max_concurrent: int = 15
+    timeout: float = 8.0
+    enable_cache: bool = True
+    is_custom: bool = False
+
+
+class StormSystemConfig(BaseModel):
+    active_llm_provider: str = "deepseek"
+    active_search_provider: str = "searxng"
+    deep_research_default: bool = True
+    max_depth: int = 2
+    llm_providers: Dict[str, LLMProviderInfo] = Field(default_factory=dict)
+    search_providers: Dict[str, SearchProviderInfo] = Field(default_factory=dict)
+
+
+# 全生态厂商官方/推荐预置模板
+DEFAULT_LLM_PRESETS: Dict[str, LLMProviderInfo] = {
+    "deepseek": LLMProviderInfo(
+        provider_id="deepseek",
+        name="DeepSeek (官方直连)",
+        base_url="https://api.deepseek.com",
+        model="deepseek-chat",
+        temperature=0.7,
+    ),
+    "siliconflow": LLMProviderInfo(
+        provider_id="siliconflow",
+        name="SiliconFlow (硅基流动)",
+        base_url="https://api.siliconflow.cn/v1",
+        model="deepseek-ai/DeepSeek-V3",
+        temperature=0.7,
+    ),
+    "openai": LLMProviderInfo(
+        provider_id="openai",
+        name="OpenAI (官方端点)",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o-mini",
+        temperature=0.7,
+    ),
+    "ollama": LLMProviderInfo(
+        provider_id="ollama",
+        name="Ollama (本地私有)",
+        base_url="http://localhost:11434/v1",
+        model="deepseek-r1:14b",
+        temperature=0.7,
+    ),
+    "moonshot": LLMProviderInfo(
+        provider_id="moonshot",
+        name="Moonshot (Kimi)",
+        base_url="https://api.moonshot.cn/v1",
+        model="moonshot-v1-32k",
+        temperature=0.7,
+    ),
+}
+
+DEFAULT_SEARCH_PRESETS: Dict[str, SearchProviderInfo] = {
+    "searxng": SearchProviderInfo(
+        provider_id="searxng",
+        name="SearXNG (自建/私有三轨路由)",
+        api_url="https://search.nunch.uk/search",
+        engines_academic="semantic_scholar,arxiv,pubmed,google_scholar",
+        engines_chinese="google,bing,baidu,zhihu",
+        engines_general="google,bing,duckduckgo",
+        max_concurrent=15,
+        timeout=8.0,
+    ),
+    "duckduckgo": SearchProviderInfo(
+        provider_id="duckduckgo",
+        name="DuckDuckGo (免 Key 公网检索)",
+        api_url="https://html.duckduckgo.com/html/",
+        engines_general="duckduckgo",
+        max_concurrent=8,
+        timeout=6.0,
+    ),
+}
+
+
+class ConfigHub:
+    """现代强类型配置管理器。"""
+
+    def __init__(self, config_path: Optional[Path] = None):
+        self.config_path = config_path or USER_CONFIG_PATH
+        self.system_config = self._load_hierarchical_config()
+
+    def _load_hierarchical_config(self) -> StormSystemConfig:
+        """分层加载配置 (Defaults -> TOML -> Environment Variables)。"""
+        cfg = StormSystemConfig()
+
+        # 1. 载入预置厂商
+        cfg.llm_providers = {k: v.model_copy() for k, v in DEFAULT_LLM_PRESETS.items()}
+        cfg.search_providers = {k: v.model_copy() for k, v in DEFAULT_SEARCH_PRESETS.items()}
+
+        # 2. 读取用户 TOML 文件（若存在）
+        if self.config_path.exists():
+            try:
+                try:
+                    import tomllib
+                    with open(self.config_path, "rb") as f:
+                        toml_data = tomllib.load(f)
+                except ImportError:
+                    import tomli as tomllib
+                    with open(self.config_path, "rb") as f:
+                        toml_data = tomllib.load(f)
+
+                if "llm" in toml_data and isinstance(toml_data["llm"], dict):
+                    llm_sec = toml_data["llm"]
+                    if "active" in llm_sec:
+                        cfg.active_llm_provider = str(llm_sec["active"])
+
+                if "search" in toml_data and isinstance(toml_data["search"], dict):
+                    search_sec = toml_data["search"]
+                    if "active_retriever" in search_sec:
+                        cfg.active_search_provider = str(search_sec["active_retriever"])
+
+                # 处理 Provider 属性配置（支持顶层 [deepseek] 或嵌套在 [llm] / [search] 下）
+                llm_group = toml_data.get("llm", {})
+                for p_id, p_obj in cfg.llm_providers.items():
+                    p_dict = toml_data.get(p_id) or (llm_group.get(p_id) if isinstance(llm_group, dict) else None)
+                    if p_dict and isinstance(p_dict, dict):
+                        for k, v in p_dict.items():
+                            if hasattr(p_obj, k):
+                                setattr(p_obj, k, v)
+
+                search_group = toml_data.get("search", {})
+                for p_id, p_obj in cfg.search_providers.items():
+                    p_dict = toml_data.get(p_id) or (search_group.get(p_id) if isinstance(search_group, dict) else None)
+                    if p_dict and isinstance(p_dict, dict):
+                        for k, v in p_dict.items():
+                            if hasattr(p_obj, k):
+                                setattr(p_obj, k, v)
+            except Exception as e:
+                logger.warning(f"Failed to parse user config file: {e}")
+
+        # 3. 环境变量最高优先级覆盖
+        env_ds_key = os.environ.get("DEEPSEEK_API_KEY")
+        if env_ds_key and "deepseek" in cfg.llm_providers:
+            cfg.llm_providers["deepseek"].api_key = env_ds_key
+
+        env_ds_base = os.environ.get("DEEPSEEK_API_BASE")
+        if env_ds_base and "deepseek" in cfg.llm_providers:
+            cfg.llm_providers["deepseek"].base_url = env_ds_base
+
+        env_openai_key = os.environ.get("OPENAI_API_KEY")
+        if env_openai_key and "openai" in cfg.llm_providers:
+            cfg.llm_providers["openai"].api_key = env_openai_key
+
+        env_searx_url = os.environ.get("SEARXNG_API_URL")
+        if env_searx_url and "searxng" in cfg.search_providers:
+            cfg.search_providers["searxng"].api_url = env_searx_url
+
+        return cfg
+
+    def get_active_llm(self) -> LLMProviderInfo:
+        p_id = self.system_config.active_llm_provider
+        return self.system_config.llm_providers.get(p_id, self.system_config.llm_providers["deepseek"])
+
+    def get_active_search(self) -> SearchProviderInfo:
+        p_id = self.system_config.active_search_provider
+        return self.system_config.search_providers.get(p_id, self.system_config.search_providers["searxng"])
+
+    def get_masked_config(self) -> Dict[str, Any]:
+        """返回已对敏感 Key 脱敏后的全量配置数据（供前端 Web 展示）。"""
+        data = self.system_config.model_dump()
+        for p_id, p_info in data.get("llm_providers", {}).items():
+            raw_key = p_info.get("api_key", "")
+            if raw_key and len(raw_key) > 8:
+                p_info["api_key_masked"] = f"{raw_key[:4]}****{raw_key[-4:]}"
+            else:
+                p_info["api_key_masked"] = "未设置" if not raw_key else "****"
+            p_info["has_key"] = bool(raw_key)
+
+        for p_id, p_info in data.get("search_providers", {}).items():
+            raw_key = p_info.get("api_key", "")
+            p_info["has_key"] = bool(raw_key)
+            if raw_key and len(raw_key) > 8:
+                p_info["api_key_masked"] = f"{raw_key[:4]}****{raw_key[-4:]}"
+            else:
+                p_info["api_key_masked"] = "未设置" if not raw_key else "****"
+        return data
+
+    def save_config(self, new_config: StormSystemConfig):
+        """持久化配置到磁盘。"""
+        self.system_config = new_config
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        lines = [
+            "# Auto-generated by STORM ConfigHub",
+            "[llm]",
+            f'active = "{new_config.active_llm_provider}"',
+        ]
+        for p_id, p in new_config.llm_providers.items():
+            lines.append(f'{p_id}.base_url = "{p.base_url}"')
+            if p.api_key:
+                lines.append(f'{p_id}.api_key = "{p.api_key}"')
+            lines.append(f'{p_id}.model = "{p.model}"')
+
+        lines.extend(["\n[search]", f'active_retriever = "{new_config.active_search_provider}"'])
+        for p_id, p in new_config.search_providers.items():
+            lines.append(f'{p_id}.api_url = "{p.api_url}"')
+            if p.api_key:
+                lines.append(f'{p_id}.api_key = "{p.api_key}"')
+            lines.append(f'{p_id}.engines_academic = "{p.engines_academic}"')
+            lines.append(f'{p_id}.engines_chinese = "{p.engines_chinese}"')
+            lines.append(f'{p_id}.engines_general = "{p.engines_general}"')
+
+        self.config_path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info(f"Config successfully saved to {self.config_path}")
+
+
+# ── 异步端点探测与诊断算法 ─────────────────────────────────────────────
+
+async def probe_llm_endpoint(base_url: str, api_key: str = "", timeout: float = 6.0) -> Dict[str, Any]:
+    """探测 LLM 端点健康度、测算 RTT 延迟并自动拉取可用模型列表。"""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    clean_base = base_url.rstrip("/")
+    probe_url = f"{clean_base}/models" if clean_base.endswith("/v1") else f"{clean_base}/v1/models"
+
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(probe_url, headers=headers)
+            rtt_ms = int((time.time() - t0) * 1000)
+            if resp.status_code == 200:
+                data = resp.json()
+                models = [m.get("id") for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+                return {"status": "ONLINE", "rtt_ms": rtt_ms, "models": models}
+            elif resp.status_code == 401:
+                return {"status": "UNAUTHORIZED", "rtt_ms": rtt_ms, "models": [], "msg": "API Key 无效或未授权"}
+            else:
+                return {"status": "HTTP_ERROR", "code": resp.status_code, "rtt_ms": rtt_ms, "models": [], "msg": resp.text[:100]}
+    except Exception as e:
+        return {"status": "OFFLINE", "rtt_ms": 0, "models": [], "msg": str(e)}
+
+
+async def probe_search_endpoint(api_url: str, api_key: str = "", timeout: float = 6.0) -> Dict[str, Any]:
+    """探测检索引擎连通性与 RTT 延迟。"""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(api_url, headers=headers, params={"q": "probe", "format": "json"})
+            rtt_ms = int((time.time() - t0) * 1000)
+            if resp.status_code == 200:
+                data = resp.json() if "json" in resp.headers.get("content-type", "") else {}
+                count = len(data.get("results", []))
+                return {"status": "ONLINE", "rtt_ms": rtt_ms, "sample_count": count}
+            else:
+                return {"status": "HTTP_ERROR", "code": resp.status_code, "rtt_ms": rtt_ms, "msg": resp.text[:100]}
+    except Exception as e:
+        return {"status": "OFFLINE", "rtt_ms": 0, "msg": str(e)}
+
+# ===== FILE: knowledge_storm/async_core/retriever.py =====
+"""
+STORM Async Core — 纯异步检索引擎 (带本地 SQLite 缓存与 Jina Reader 深度正文提纯)
+支持自建 SearXNG（多轨智能路由）、DuckDuckGo 并发检索，集成三级查询缓存与二级全文深度提纯。
+"""
+
+import asyncio
+import hashlib
+import json
+import logging
+import re
+import sqlite3
+import time
+from urllib.parse import urlparse
+from pathlib import Path
+from typing import List, Optional, Union, Dict, Any, Set
+import httpx
+
+from .models import SearchSnippet
+
+logger = logging.getLogger(__name__)
+
+CACHE_DB_PATH = Path("./results_async/.search_cache.db")
+
+
+class SearchCacheManager:
+    """基于 SQLite 的检索语义缓存管理器。"""
+
+    def __init__(self, db_path: Path = CACHE_DB_PATH, ttl_seconds: int = 43200):
+        self.db_path = db_path
+        self.ttl_seconds = ttl_seconds
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS search_cache (
+                    query_hash TEXT PRIMARY KEY,
+                    query_text TEXT,
+                    results_json TEXT,
+                    created_at REAL
+                );
+            """)
+            conn.commit()
+
+    def get(self, query: str, top_k: Optional[int] = None) -> Optional[List[SearchSnippet]]:
+        q_hash = hashlib.sha256(query.strip().lower().encode("utf-8")).hexdigest()
+        now = time.time()
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT results_json, created_at FROM search_cache WHERE query_hash = ?", (q_hash,))
+            row = cur.fetchone()
+            if row:
+                res_json, created_at = row
+                if now - created_at < self.ttl_seconds:
+                    try:
+                        raw_list = json.loads(res_json)
+                        snippets = [SearchSnippet(**item) for item in raw_list]
+                        return snippets[:top_k] if top_k else snippets
+                    except Exception:
+                        pass
+        return None
+
+    def set(self, query: str, snippets: List[SearchSnippet]):
+        q_hash = hashlib.sha256(query.strip().lower().encode("utf-8")).hexdigest()
+        raw_list = [s.model_dump() for s in snippets]
+        res_json = json.dumps(raw_list, ensure_ascii=False)
+        now = time.time()
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO search_cache (query_hash, query_text, results_json, created_at) VALUES (?, ?, ?, ?)",
+                (q_hash, query, res_json, now),
+            )
+            conn.commit()
+
+
+# 基础权威白名单（学术、开源代码与核心维基，绝不误杀）
+AUTHORITATIVE_WHITELIST = {
+    "arxiv.org",
+    "github.com",
+    "ieee.org",
+    "acm.org",
+    "wikipedia.org",
+    "semanticscholar.org",
+    "nature.com",
+    "science.org",
+    "springer.com",
+    "wiley.com",
+    "sciencedirect.com",
+    "zhihu.com",
+}
+
+# 默认内置核心内容农场、SEO 采集站与垃圾下载站（冷启动零网络依赖兜底）
+BUILTIN_SPAM_DOMAINS = {
+    # 软件下载站 / 捆绑安装站
+    "pc.qq.com", "onlinedown.net", "soft.360.cn", "downxia.com", "jb51.net",
+    "greendown.cn", "crsky.com", "zol.com.cn", "xiazai.com", "mydown.com",
+    "duote.com", "cr173.com", "skycn.com", "newasp.net", "xiazaiba.com",
+    "downza.cn", "pc6.com", "downcc.com", "greenxf.com", "ouyaoxiazai.com",
+    "vipcn.com", "uzzf.com", "itmop.com", "52z.com", "jisuxz.com",
+    # 华语知名内容农场 / 机器翻译聚合采集站
+    "kknews.cc", "read01.com", "twgreatdaily.com", "cocomy.net", "gushiciku.cn",
+    "itread01.com", "coderbridge.com", "programming.vip", "codenong.com",
+    "shangyexinzhi.com", "360kuai.com", "kuaibao.qq.com",
+    "xuebuyuan.com", "boke8.net", "hubwiz.com", "yiidian.com",
+    # 英文常见 SEO 采集站与垃圾镜像
+    "geek-share.com", "hotexamples.com", "programcreek.com", "codota.com",
+    "copyprogramming.com",
+}
+
+BUILTIN_SPAM_URL_PATTERNS = [
+    r"baike\.baidu\.com/tashuo",
+    r"tutorialspoint\.com/market",
+]
+
+SPAM_PATH_PATTERN = re.compile(
+    r"/(download|xiazai|soft|down|apk|exe|app_detail|softdown)/", re.IGNORECASE
+)
+
+SPAM_CONTENT_KEYWORDS = [
+    "免费软件下载", "高速下载", "绿色纯净版", "破解补丁", "安装包下载",
+    "立即下载", "官方正版下载", "电脑版下载", "手机版下载", "免费高速下载",
+]
+
+
+class SpamFilterManager:
+    """本地持久化与异步订阅更新的内容农场与垃圾站过滤器。"""
+
+    def __init__(self, local_file: Optional[Path] = None):
+        self.local_file = local_file or (Path.home() / ".storm" / "spam_domains.txt")
+        self.local_file.parent.mkdir(parents=True, exist_ok=True)
+        self.spam_domains: Set[str] = set()
+        self._load_local_or_init()
+
+    def _load_local_or_init(self):
+        """从本地文件加载，若文件不存在则以内置名单初始化。"""
+        if not self.local_file.exists():
+            self.spam_domains = set(BUILTIN_SPAM_DOMAINS)
+            self._save_to_local()
+            return
+
+        try:
+            with open(self.local_file, "r", encoding="utf-8") as f:
+                lines = [line.strip().lower() for line in f if line.strip() and not line.startswith("#")]
+                self.spam_domains = set(lines) | set(BUILTIN_SPAM_DOMAINS)
+        except Exception as e:
+            logger.warning(f"Failed to load local spam domains file, fallback to builtins: {e}")
+            self.spam_domains = set(BUILTIN_SPAM_DOMAINS)
+
+    def _save_to_local(self):
+        """持久化保存至本地文本文件。"""
+        try:
+            with open(self.local_file, "w", encoding="utf-8") as f:
+                f.write("# STORM Content Farm & Spam Domain Filter List\n")
+                f.write(f"# Total Domains: {len(self.spam_domains)}\n\n")
+                for domain in sorted(self.spam_domains):
+                    f.write(f"{domain}\n")
+        except Exception as e:
+            logger.warning(f"Failed to save spam domains to {self.local_file}: {e}")
+
+    async def sync_remote_blocklists(self) -> Dict[str, Any]:
+        """异步拉取开源社区权威垃圾站与内容农场订阅源（GitHub Raw），自动去重合并。"""
+        remote_sources = [
+            "https://raw.githubusercontent.com/cobaltdisco/Google-Search-Blacklist/master/src/blacklist.txt",
+            "https://raw.githubusercontent.com/danny0838/content-farm-terminator/master/rules/block.txt",
+        ]
+        headers = {"User-Agent": "STORM-SpamFilter-Sync/1.0"}
+        added_count = 0
+        initial_count = len(self.spam_domains)
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            for url in remote_sources:
+                try:
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code == 200:
+                        for raw_line in resp.text.splitlines():
+                            line = raw_line.strip()
+                            if not line or line.startswith("#") or line.startswith("!"):
+                                continue
+                            # 清洗 uBlacklist 语法: *://*.example.com/* -> example.com
+                            cleaned = (
+                                line.replace("*://*.", "")
+                                .replace("*://", "")
+                                .replace("/*", "")
+                                .replace("@", "")
+                                .strip()
+                                .lower()
+                            )
+                            if cleaned and "." in cleaned and "/" not in cleaned:
+                                if cleaned not in self.spam_domains:
+                                    self.spam_domains.add(cleaned)
+                                    added_count += 1
+                except Exception as e:
+                    logger.debug(f"Spam list sync from {url} encountered notice: {e}")
+
+        if added_count > 0:
+            self._save_to_local()
+
+        return {
+            "initial_count": initial_count,
+            "added_count": added_count,
+            "total_count": len(self.spam_domains),
+            "updated_at": time.time(),
+        }
+
+    def is_spam(self, url: str, title: str = "", content: str = "") -> bool:
+        """多层复合判定 URL、标题或摘要是否属于垃圾内容农场或下载站。"""
+        if not url:
+            return True
+
+        try:
+            parsed = urlparse(url)
+            netloc = parsed.netloc.lower()
+            path = parsed.path.lower()
+            full_url_lower = url.lower()
+
+            # 1. 权威白名单直接放行
+            if any(netloc == wl or netloc.endswith("." + wl) for wl in AUTHORITATIVE_WHITELIST):
+                return False
+
+            # 2. 域名黑名单匹配（精准匹配或子域名匹配）
+            if any(netloc == sd or netloc.endswith("." + sd) for sd in self.spam_domains):
+                return True
+
+            # 3. 内置 URL 路径黑名单匹配
+            if any(re.search(pat, full_url_lower) for pat in BUILTIN_SPAM_URL_PATTERNS):
+                return True
+
+            # 4. URL 路径下载特征正则拦截
+            if SPAM_PATH_PATTERN.search(path):
+                return True
+
+            # 5. 标题与摘要强垃圾 SEO 特征词拦截
+            text_sample = f"{title} {content}"
+            if any(kw in text_sample for kw in SPAM_CONTENT_KEYWORDS):
+                return True
+
+        except Exception:
+            return False
+
+        return False
+
+
+# 全局单例
+_GLOBAL_SPAM_FILTER = SpamFilterManager()
+
+
+class AsyncSearXNG:
+    """现代纯异步 SearXNG 客户端（集成三级缓存、动态订阅垃圾过滤与二级全文提纯）。"""
+
+    def __init__(
+        self,
+        api_url: str = "http://localhost:8080/search",
+        api_key: str = "",
+        engines_academic: str = "semantic_scholar,arxiv,pubmed,google_scholar",
+        engines_chinese: str = "google,bing,baidu,zhihu",
+        engines_general: str = "google,bing,duckduckgo",
+        max_concurrent: int = 15,
+        timeout: float = 8.0,
+        enable_cache: bool = True,
+    ):
+        self.api_url = api_url.rstrip("/")
+        self.api_key = api_key
+        self.engines_academic = engines_academic
+        self.engines_chinese = engines_chinese
+        self.engines_general = engines_general
+        self.max_concurrent = max_concurrent
+        self.timeout = timeout
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.enable_cache = enable_cache
+        self.cache_manager = SearchCacheManager() if enable_cache else None
+        self.spam_filter = _GLOBAL_SPAM_FILTER
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _is_spam_url(self, url: str, title: str = "", content: str = "") -> bool:
+        """委托给动态 SpamFilterManager 执行多层判定。"""
+        return self.spam_filter.is_spam(url, title=title, content=content)
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """获取或复用实例级长连接池。"""
+        if self._client is None or self._client.is_closed:
+            try:
+                self._client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+                    http2=True,
+                )
+            except Exception as e:
+                logger.debug(f"HTTP/2 init failed for SearXNG client ({e}), fallback to HTTP/1.1")
+                self._client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+                    http2=False,
+                )
+        return self._client
+
+    async def close(self):
+        """显式关闭连接池。"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    async def search(self, query: str, top_k: int = 5) -> List[SearchSnippet]:
+        """异步执行网页与文献检索（含缓存命中、三轨路由与垃圾域名过滤）。"""
+        clean_query = query.strip()
+        if not clean_query:
+            return []
+
+        if self.enable_cache and self.cache_manager:
+            cached_snippets = self.cache_manager.get(clean_query, top_k)
+            if cached_snippets:
+                return cached_snippets
+
+        async with self.semaphore:
+            snippets = await self._execute_search_with_routing(clean_query, top_k)
+
+        if self.enable_cache and self.cache_manager and snippets:
+            self.cache_manager.set(clean_query, snippets)
+
+        return snippets
+
+    def _is_relevant_snippet(self, query: str, snippet: SearchSnippet) -> bool:
+        """判定检索片段是否与查询词具备基本语义相关度（过滤蜜罐实例与假数据）。"""
+        chinese_chars = [c for c in query if '\u4e00' <= c <= '\u9fff']
+        text = (snippet.title + " " + snippet.content).lower()
+        if chinese_chars:
+            # 中文查询：至少命中查询词中 25% 以上的汉字或 2 个关键汉字
+            matched = sum(1 for c in set(chinese_chars) if c in text)
+            if matched < min(2, len(set(chinese_chars))):
+                return False
+        else:
+            # 英文查询：至少命中 1 个有效单词 (len >= 4)
+            words = [w.lower() for w in re.findall(r'[a-zA-Z]{4,}', query)]
+            if words and not any(w in text for w in words):
+                return False
+        return True
+
+    async def _execute_search_with_routing(self, query: str, top_k: int = 5) -> List[SearchSnippet]:
+        """内部执行带路由策略的网络请求、垃圾过滤与真实性核验。"""
+        headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        params: Dict[str, Any] = {
+            "q": query,
+            "format": "json",
+            "language": "zh-CN",
+        }
+
+        # 三轨智能路由选择
+        chinese_chars = sum(1 for c in query if '\u4e00' <= c <= '\u9fff')
+        total_chars = len(query.strip())
+        is_mixed_or_academic = any(kw in query.lower() for kw in ["paper", "survey", "arxiv", "benchmark", "dataset", "framework", "algorithm"])
+
+        if chinese_chars == 0 or is_mixed_or_academic or (chinese_chars / max(total_chars, 1) < 0.3):
+            params["engines"] = self.engines_academic if self.engines_academic else self.engines_general
+        else:
+            params["engines"] = self.engines_chinese
+
+        snippets: List[SearchSnippet] = []
+        client = self._get_client()
+        for attempt in range(2):
+            try:
+                req_timeout = 3.5 if params.get("engines") == self.engines_academic else self.timeout
+                resp = await client.get(self.api_url, headers=headers, params=params, timeout=req_timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for r in data.get("results", []):
+                        url = r.get("url", "")
+                        title_text = r.get("title", "").strip()
+                        content_text = r.get("content", "").strip()
+                        if not url or self._is_spam_url(url, title=title_text, content=content_text):
+                            continue
+                        engine_name = str(r.get("engine", "searxng")).lower()
+                        # 学术引擎赋予 1.2 高权威度
+                        if any(sch in engine_name for sch in ["scholar", "arxiv", "pubmed", "semanticscholar"]):
+                            quality = 1.2
+                        elif any(ugc in engine_name for ugc in ["zhihu", "reddit", "weibo", "forum"]):
+                            quality = 0.8
+                        else:
+                            quality = 1.0
+
+                        snip = SearchSnippet(
+                            url=url,
+                            title=title_text,
+                            content=content_text,
+                            engine=engine_name,
+                            source_quality=quality,
+                        )
+                        if self._is_relevant_snippet(query, snip):
+                            snippets.append(snip)
+                            if len(snippets) >= top_k:
+                                break
+                    break
+                elif resp.status_code in (429, 502, 503, 504):
+                    await asyncio.sleep(0.3 * (attempt + 1))
+            except Exception as e:
+                if attempt == 0:
+                    await asyncio.sleep(0.2)
+                else:
+                    logger.debug(f"Async SearXNG search error: {e}")
+
+        # Fallback 1: SearXNG 通用引擎组
+        if len(snippets) < 2 and self.engines_general and params.get("engines") != self.engines_general:
+            params["engines"] = self.engines_general
+            try:
+                fb_resp = await client.get(self.api_url, headers=headers, params=params, timeout=self.timeout)
+                if fb_resp.status_code == 200:
+                    fb_data = fb_resp.json()
+                    for r in fb_data.get("results", []):
+                        url = r.get("url", "")
+                        fb_title = r.get("title", "").strip()
+                        fb_content = r.get("content", "").strip()
+                        if not url or self._is_spam_url(url, title=fb_title, content=fb_content) or any(s.url == url for s in snippets):
+                            continue
+                        fb_snip = SearchSnippet(
+                            url=url,
+                            title=fb_title,
+                            content=fb_content,
+                            engine=r.get("engine", "searxng_fallback"),
+                            source_quality=1.0,
+                        )
+                        if self._is_relevant_snippet(query, fb_snip):
+                            snippets.append(fb_snip)
+                            if len(snippets) >= top_k:
+                                break
+            except Exception as e:
+                logger.debug(f"SearXNG fallback search error: {e}")
+
+        # Fallback 2: 若 SearXNG 实例受限或返回伪数据，无缝启动内置 DuckDuckGo 直连保底
+        if len(snippets) < 2:
+            ddg_snippets = await self._search_direct_ddg(query, top_k=(top_k - len(snippets)))
+            for s in ddg_snippets:
+                if self._is_relevant_snippet(query, s) and not any(exist.url == s.url for exist in snippets):
+                    snippets.append(s)
+
+        return snippets
+
+    async def _search_direct_ddg(self, query: str, top_k: int = 5) -> List[SearchSnippet]:
+        """内置高可用轻量 DuckDuckGo 直连检索通道（零外部依赖、双层容灾兜底）。"""
+        client = self._get_client()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        res: List[SearchSnippet] = []
+        try:
+            resp = await client.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": query},
+                headers=headers,
+                timeout=6.0,
+            )
+            if resp.status_code == 200:
+                html = resp.text
+                blocks = re.findall(r'<div class="result results_links results_links_deep[\s\S]*?</div>\s*</div>\s*</div>', html)
+                import urllib.parse
+                for b in blocks:
+                    url_m = re.search(r'<a class="result__url" href="(.*?)"', b)
+                    snip_m = re.search(r'<a class="result__snippet"[^>]*>([\s\S]*?)</a>', b)
+                    title_m = re.search(r'<a class="result__a"[^>]*>([\s\S]*?)</a>', b)
+
+                    raw_url = url_m.group(1).strip() if url_m else ""
+                    if "uddg=" in raw_url:
+                        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
+                        raw_url = parsed["uddg"][0] if "uddg" in parsed else raw_url
+
+                    title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else "Web Search Result"
+                    content = re.sub(r'<[^>]+>', '', snip_m.group(1)).strip() if snip_m else ""
+
+                    if not raw_url or self._is_spam_url(raw_url, title=title, content=content):
+                        continue
+
+                    res.append(
+                        SearchSnippet(
+                            url=raw_url,
+                            title=title,
+                            content=content,
+                            engine="duckduckgo_direct",
+                            source_quality=1.0,
+                        )
+                    )
+                    if len(res) >= top_k:
+                        break
+        except Exception as e:
+            logger.debug(f"Direct DDG fallback error: {e}")
+        return res
+
+    async def fetch_deep_markdown(self, url: str, timeout: float = 6.0) -> str:
+        """多策略网页正文提纯 (Jina Reader 优先 + 直连 HTML 轻量提取回退)。"""
+        if not url.startswith("http"):
+            return ""
+        
+        client = self._get_client()
+        # 1. 优先尝试 Jina Reader
+        jina_url = f"https://r.jina.ai/{url}"
+        try:
+            resp = await client.get(
+                jina_url,
+                headers={"Accept": "text/markdown", "User-Agent": "Mozilla/5.0"},
+                timeout=timeout,
+            )
+            if resp.status_code == 200 and len(resp.text.strip()) > 80:
+                return resp.text.strip()[:3500]
+        except Exception:
+            pass
+
+        # 2. 直连 HTTP 回退与轻量 HTML 清洗
+        try:
+            resp = await client.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+                timeout=timeout,
+                follow_redirects=True,
+            )
+            if resp.status_code == 200:
+                html = resp.text
+                # 剔除 script, style, nav 等标签
+                cleaned = re.sub(r'<(script|style|nav|header|footer)[\s\S]*?<\/\1>', '', html, flags=re.IGNORECASE)
+                cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
+                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                if len(cleaned) > 50:
+                    return cleaned[:3000]
+        except Exception as e:
+            logger.debug(f"Deep markdown fetch failed for {url}: {e}")
+        return ""
+
+# ===== FILE: knowledge_storm/async_core/hybrid_retriever.py =====
+"""
+STORM Async Core — 多源混合检索与 RRF 融合引擎 (HybridRetriever)
+融合两路独立召回通道：
+1. 外部 Web 实时检索 (AsyncSearXNG)
+2. 本地知识库/语料库轻量检索 (Local Docs BM25 / Exact Term Index)
+使用 Reciprocal Rank Fusion (RRF) 算法进行多路召回重排，提供全局证据聚合。
+"""
+
+import asyncio
+import math
+import logging
+import os
+import re
+from pathlib import Path
+from typing import List, Dict, Optional, Any
+from collections import defaultdict
+
+from .models import SearchSnippet
+from .retriever import AsyncSearXNG
+
+logger = logging.getLogger(__name__)
+
+
+class LocalBM25Index:
+    """轻量纯 Python 内存 BM25 索引器（支持本地 Markdown/TXT/PDF 导出的文本）。"""
+
+    def __init__(self, k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self.docs: List[SearchSnippet] = []
+        self.doc_lengths: List[int] = []
+        self.avg_doc_len: float = 0.0
+        self.doc_freqs: Dict[str, int] = defaultdict(int)
+        self.term_freqs: List[Dict[str, int]] = []
+
+    def add_directory(self, dir_path: str):
+        """扫描并加载本地文本文件入库。"""
+        p = Path(dir_path)
+        if not p.exists() or not p.is_dir():
+            return
+
+        for fpath in p.rglob("*"):
+            if fpath.is_file() and fpath.suffix.lower() in (".txt", ".md", ".json", ".log"):
+                try:
+                    content = fpath.read_text(encoding="utf-8", errors="ignore")
+                    if len(content.strip()) > 20:
+                        # 划分段落
+                        paragraphs = [para.strip() for para in content.split("\n\n") if len(para.strip()) > 30]
+                        for idx, para in enumerate(paragraphs):
+                            self.add_document(
+                                content=para,
+                                title=f"{fpath.name} (Part {idx+1})",
+                                url=f"file://{fpath.absolute()}#part{idx+1}",
+                            )
+                except Exception as e:
+                    logger.debug(f"Failed to index {fpath}: {e}")
+
+        self._finalize_index()
+
+    def add_document(self, content: str, title: str, url: str):
+        snippet = SearchSnippet(url=url, title=title, content=content, engine="local_bm25")
+        tokens = self._tokenize(content)
+        t_freq = defaultdict(int)
+        for t in tokens:
+            t_freq[t] += 1
+
+        self.docs.append(snippet)
+        self.doc_lengths.append(len(tokens))
+        self.term_freqs.append(t_freq)
+        for t in t_freq:
+            self.doc_freqs[t] += 1
+
+    def _finalize_index(self):
+        if self.doc_lengths:
+            self.avg_doc_len = sum(self.doc_lengths) / len(self.doc_lengths)
+
+    def search(self, query: str, top_k: int = 5) -> List[SearchSnippet]:
+        """BM25 打分检索。"""
+        if not self.docs or not self.doc_lengths:
+            return []
+
+        q_tokens = self._tokenize(query)
+        scores = []
+        n_docs = len(self.docs)
+
+        for i, doc_tf in enumerate(self.term_freqs):
+            doc_len = self.doc_lengths[i]
+            score = 0.0
+            for t in q_tokens:
+                if t in doc_tf:
+                    tf = doc_tf[t]
+                    df = self.doc_freqs.get(t, 0)
+                    idf = math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
+                    numerator = tf * (self.k1 + 1.0)
+                    denominator = tf + self.k1 * (1.0 - self.b + self.b * (doc_len / max(self.avg_doc_len, 1.0)))
+                    score += idf * (numerator / max(denominator, 1e-5))
+            if score > 0:
+                scores.append((i, score))
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return [self.docs[i] for i, _ in scores[:top_k]]
+
+    def _tokenize(self, text: str) -> List[str]:
+        # 兼容中英文分词
+        clean_text = text.lower()
+        # 提取英文单词与中文字符
+        tokens = re.findall(r'[a-z0-9]+|[\u4e00-\u9fff]', clean_text)
+        return tokens
+
+
+class HybridRetriever:
+    """多源混合检索引擎（Web + 本地 BM25 + RRF 融合）。"""
+
+    def __init__(
+        self,
+        web_retriever: AsyncSearXNG,
+        local_docs_dir: Optional[str] = None,
+        rrf_k: int = 60,
+    ):
+        self.web_retriever = web_retriever
+        self.rrf_k = rrf_k
+        self.local_index = LocalBM25Index()
+        if local_docs_dir:
+            self.local_index.add_directory(local_docs_dir)
+
+    async def search(self, query: str, top_k: int = 5) -> List[SearchSnippet]:
+        """执行混合检索并通过 RRF 算法合并重排。"""
+        # 1. 并发获取 Web 检索结果与本地检索结果
+        web_task = self.web_retriever.search(query, top_k=top_k * 2)
+        local_results = self.local_index.search(query, top_k=top_k * 2)
+        web_results = await web_task
+
+        # 2. RRF (Reciprocal Rank Fusion) 倒数排名融合打分
+        rrf_scores: Dict[str, float] = defaultdict(float)
+        snippet_map: Dict[str, SearchSnippet] = {}
+
+        # 累计 Web 结果分数 (rank 从 1 开始)
+        for rank, snip in enumerate(web_results, start=1):
+            rrf_scores[snip.url] += 1.0 / (self.rrf_k + rank)
+            snippet_map[snip.url] = snip
+
+        # 累计 Local 结果分数 (权重适当偏向本地高权威文档: 1.2x)
+        for rank, snip in enumerate(local_results, start=1):
+            rrf_scores[snip.url] += 1.2 / (self.rrf_k + rank)
+            snippet_map[snip.url] = snip
+
+        # 3. 按 RRF 综合得分降序排列
+        sorted_urls = sorted(rrf_scores.keys(), key=lambda u: rrf_scores[u], reverse=True)
+        final_results = [snippet_map[u] for u in sorted_urls[:top_k]]
+        return final_results
+
+    async def close(self):
+        """关闭内嵌的 Web 检索引擎长连接。"""
+        if hasattr(self.web_retriever, "close"):
+            await self.web_retriever.close()
+
+# ===== FILE: knowledge_storm/async_core/deep_exploration.py =====
+"""
+STORM Async Core — 动态递归探索树 (Dynamic Exploration Tree / Tree-of-Thoughts)
+实现自适应深度下钻，突破固定轮数遍历限制：
+1. 基于信息增益率自发评估知识缺口 (Knowledge Gap Assessment)
+2. 针对关键技术疑点与争议自发派生分支子任务 (Recursive Sub-query Generation)
+3. 知识饱和度阈值自适应收敛判定 (Information Gain Convergence Check)
+"""
+
+import asyncio
+import logging
+import re
+from typing import List, Dict, Optional, Callable, Any, Set
+from pydantic import BaseModel, Field
+
+from .models import Persona, FactEntry, FactPool, SearchSnippet, DialogueTurn
+from .llm import AsyncLLM
+
+logger = logging.getLogger(__name__)
+
+
+class ExplorationNode(BaseModel):
+    """探索树节点"""
+    node_id: str
+    depth: int = 0
+    parent_id: Optional[str] = None
+    query: str
+    rationale: str = Field(description="提出该探索子问题的物理/逻辑原因")
+    perspective: str = "General"

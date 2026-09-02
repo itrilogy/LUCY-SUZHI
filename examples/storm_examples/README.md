@@ -1,3 +1,8 @@
+# Examples（上游遗留 · 非溯知主路径）
+
+> **废弃入口。** 溯知 · SuZhi V1.0 请使用 `python3 -m server.app` 或 `python3 -m cli.async_runner`。  
+> 本目录是 Stanford STORM 同步示例，依赖 DSPy 等，**不是**本产品交付路径，也不纳入软著源程序。
+
 # Examples
 
 We host a number of example scripts for various customization of STORM (e.g., use your favorite language models, use your own corpus, etc.). These examples can be starting points for your own customizations and you are welcome to contribute your own examples by submitting a pull request to this directory.

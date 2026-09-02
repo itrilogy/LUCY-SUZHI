@@ -4,6 +4,7 @@ STORM Async Core — 数据模型定义 (Pydantic v2)
 """
 
 from typing import Dict, List, Optional, Any, Union, Set
+from difflib import SequenceMatcher
 from pydantic import BaseModel, Field, PrivateAttr
 from datetime import datetime
 
@@ -42,7 +43,35 @@ class FactEntry(BaseModel):
     confidence: float = 1.0
     perspective: str = ""
     source_quality: float = 1.0
+    engine: str = ""
     extracted_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+def _norm_claim_text(text: str) -> str:
+    return "".join((text or "").split()).lower().rstrip("。，；.,;！？!?")
+
+
+def _char_ngrams(text: str, n: int = 3) -> Set[str]:
+    if len(text) < n:
+        return {text} if text else set()
+    return {text[i : i + n] for i in range(len(text) - n + 1)}
+
+
+def claim_jaccard(a: str, b: str, n: int = 3) -> float:
+    sa, sb = _char_ngrams(_norm_claim_text(a), n), _char_ngrams(_norm_claim_text(b), n)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def claim_similarity(a: str, b: str) -> float:
+    """近义相似度：字符 3-gram Jaccard 与序列比的较大值。"""
+    na, nb = _norm_claim_text(a), _norm_claim_text(b)
+    if not na or not nb:
+        return 0.0
+    jac = claim_jaccard(na, nb)
+    seq = SequenceMatcher(None, na, nb).ratio()
+    return max(jac, seq)
 
 
 class FactPool(BaseModel):
@@ -51,6 +80,7 @@ class FactPool(BaseModel):
     url_to_index: Dict[str, int] = Field(default_factory=dict)
     url_to_title: Dict[str, str] = Field(default_factory=dict)
     _norm_hashes: Set[str] = PrivateAttr(default_factory=set)
+    near_dup_threshold: float = 0.86
 
     def add_fact(
         self,
@@ -60,24 +90,30 @@ class FactPool(BaseModel):
         perspective: str = "",
         source_quality: float = 1.0,
         confidence: float = 1.0,
+        engine: str = "",
     ) -> Optional[FactEntry]:
         """向事实池沉淀原子事实（带 O(1) 标准化去重守卫与信源权威度评级）。"""
         clean_claim = claim.strip()
         if not clean_claim or len(clean_claim) < 5:
             return None
+        if not (url or "").strip() or "storm-synthesis.org" in url:
+            return None
 
-        # 1. 精确标准化去重（剔除首尾标点、统一空白）
-        norm_claim = "".join(clean_claim.split()).lower().rstrip("。，；.,;")
-        
-        # 懒加载初始化已有 facts 的哈希缓存（反序列化恢复时有用）
+        # 1. 精确标准化去重 + 字符 n-gram Jaccard 近义去重
+        norm_claim = _norm_claim_text(clean_claim)
+
         if not self._norm_hashes and self.facts:
-            self._norm_hashes = {"".join(f.claim.split()).lower().rstrip("。，；.,;") for f in self.facts}
+            self._norm_hashes = {_norm_claim_text(f.claim) for f in self.facts}
 
         if norm_claim in self._norm_hashes:
             for existing in self.facts:
-                if "".join(existing.claim.split()).lower().rstrip("。，；.,;") == norm_claim:
+                if _norm_claim_text(existing.claim) == norm_claim:
                     return existing
             return None
+
+        for existing in self.facts:
+            if claim_similarity(norm_claim, existing.claim) >= self.near_dup_threshold:
+                return existing
 
         self._norm_hashes.add(norm_claim)
 
@@ -95,6 +131,7 @@ class FactPool(BaseModel):
             perspective=perspective,
             source_quality=source_quality,
             confidence=confidence,
+            engine=engine,
         )
         self.facts.append(entry)
         return entry
@@ -103,11 +140,16 @@ class FactPool(BaseModel):
         """生成带引用编号的参考文献字典"""
         citations = {}
         for url, idx in self.url_to_index.items():
-            snippets = [f.claim for f in self.facts if f.source_url == url]
+            related = [f for f in self.facts if f.source_url == url]
+            snippets = [f.claim for f in related]
+            qualities = [f.source_quality for f in related if f.source_quality]
+            engines = [f.engine for f in related if f.engine]
             citations[idx] = {
                 "url": url,
                 "title": self.url_to_title.get(url, url),
                 "snippets": snippets,
+                "source_quality": max(qualities) if qualities else 1.0,
+                "engine": engines[0] if engines else "",
             }
         return citations
 
@@ -147,6 +189,16 @@ class DialogueTurn(BaseModel):
     search_snippets: List[SearchSnippet] = Field(default_factory=list)
     answer: str
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class SeminarUtterance(BaseModel):
+    """研讨现场一句对白（主持人 / 视角 / 审稿人 / 书记员）"""
+    kind: str = Field(description="host | expert | reviewer | scribe")
+    name: str
+    role_label: str = ""
+    text: str
+    color: str = ""
+    ts: str = ""
 
 
 class ArticleDraft(BaseModel):

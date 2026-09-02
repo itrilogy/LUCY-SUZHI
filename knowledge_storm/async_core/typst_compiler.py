@@ -26,7 +26,7 @@ class TypstCompiler:
     def __init__(self, template: str = "ieee_paper"):
         self.template = template
 
-    def generate_typst_source(self, draft: ArticleDraft, author: str = "STORM Deep Research Agent", affiliation: str = "Knowledge Intelligence Lab") -> str:
+    def generate_typst_source(self, draft: ArticleDraft, author: str = "溯知 · SuZhi", affiliation: str = "鹿溪联合创新实验室") -> str:
         """将 ArticleDraft 转换为合法的 Typst 源文件内容。"""
         topic = draft.topic
         content = draft.polished_content or draft.content

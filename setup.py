@@ -15,16 +15,16 @@ with open("requirements.txt", encoding="utf-8") as f:
 
 
 setup(
-    name="knowledge-storm",
-    version="1.1.1",
-    author="Yijia Shao, Yucheng Jiang",
-    author_email="shaoyj@stanford.edu, yuchengj@stanford.edu",
-    description="STORM: A language model-powered knowledge curation engine.",
+    name="suzhi-storm",
+    version="1.0.0",
+    author="鹿溪联合创新实验室",
+    author_email="",
+    description="溯知 · SuZhi：深度知识策展与学术长文生成（引擎代号 STORM）。含受 Stanford STORM（MIT）启发的独立异步重写。",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/stanford-oval/storm",
+    url="",
     license="MIT License",
-    packages=find_packages(),
+    packages=find_packages(exclude=["tests", "tests.*", "path", "path.*", "examples", "examples.*", "frontend", "frontend.*"]),
     classifiers=[
         "Development Status :: 3 - Alpha",
         "License :: OSI Approved :: MIT License",

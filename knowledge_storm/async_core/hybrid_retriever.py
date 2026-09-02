@@ -147,6 +147,9 @@ class HybridRetriever:
         # 3. 按 RRF 综合得分降序排列
         sorted_urls = sorted(rrf_scores.keys(), key=lambda u: rrf_scores[u], reverse=True)
         final_results = [snippet_map[u] for u in sorted_urls[:top_k]]
+        enrich = getattr(self.web_retriever, "enrich_snippets", None)
+        if enrich:
+            final_results = await enrich(final_results, top_n=min(3, len(final_results)))
         return final_results
 
     async def close(self):

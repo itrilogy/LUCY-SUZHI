@@ -24,8 +24,8 @@ class ReviewDimensionScore(BaseModel):
 
 
 class AcademicReviewReport(BaseModel):
-    overall_score: int = 85
-    is_passed: bool = True
+    overall_score: int = 0
+    is_passed: bool = False
     dimension_scores: List[ReviewDimensionScore] = Field(default_factory=list)
     flawed_sections: List[str] = Field(default_factory=list)
     critical_suggestions: List[str] = Field(default_factory=list)
@@ -38,14 +38,20 @@ class AcademicReviewer:
         self.llm = llm
         self.pass_threshold = pass_threshold
 
+    def _section_sample(self, content: str, per_section: int = 1400, total_cap: int = 9000) -> str:
+        parts = re.split(r"\n(?=##\s+)", content or "")
+        chunks = [p.strip()[:per_section] for p in parts if p.strip()]
+        text = "\n\n".join(chunks[:12])
+        return text[:total_cap] if text else (content or "")[:total_cap]
+
     async def review_article(self, draft: ArticleDraft) -> AcademicReviewReport:
-        """对草稿执行 6 维度量化评审。"""
-        content_sample = draft.content[:3500]
+        """对草稿按章节抽样执行 6 维度量化评审。解析失败视为未通过。"""
+        content_sample = self._section_sample(draft.content)
         is_chinese = any('\u4e00' <= c <= '\u9fff' for c in draft.topic)
 
         if is_chinese:
             prompt = f"""研究课题: {draft.topic}
-文章正文（节选）:
+文章正文（按章节抽样，非全文截断）:
 {content_sample}
 
 你作为顶级学术期刊的执行主编，请从以下 6 个维度对本篇学术长文进行严格量化评审（各项打分 0-100）：
@@ -108,9 +114,10 @@ Output strictly in JSON format matching this schema:
         data = safe_extract_json(res)
         if data:
             try:
+                score = int(data.get("overall_score") or 0)
                 report = AcademicReviewReport(
-                    overall_score=data.get("overall_score", 85),
-                    is_passed=data.get("overall_score", 85) >= self.pass_threshold,
+                    overall_score=score,
+                    is_passed=score >= self.pass_threshold,
                     dimension_scores=[ReviewDimensionScore(**d) for d in data.get("dimension_scores", [])],
                     flawed_sections=data.get("flawed_sections", []),
                     critical_suggestions=data.get("critical_suggestions", []),
@@ -119,16 +126,13 @@ Output strictly in JSON format matching this schema:
             except Exception as e:
                 logger.warning(f"Failed to instantiate AcademicReviewReport: {e}")
 
-        fallback_suggestion = "建议确保所有关键行业数据与技术指标均具备明确的信源标注。" if is_chinese else "Ensure all statistics have source references."
+        fail_msg = "评审结果无法解析，本轮视为未通过，请人工复核。" if is_chinese else "Review JSON could not be parsed; treated as failed."
         return AcademicReviewReport(
-            overall_score=85,
-            is_passed=True,
-            dimension_scores=[
-                ReviewDimensionScore(dimension="事实严谨度" if is_chinese else "Factual Rigor", score=85, feedback="基础论据扎实" if is_chinese else "Standard grounding"),
-                ReviewDimensionScore(dimension="引用覆盖率" if is_chinese else "Citation Density", score=85, feedback="规范标注引用" if is_chinese else "Standard citations"),
-            ],
+            overall_score=0,
+            is_passed=False,
+            dimension_scores=[],
             flawed_sections=[],
-            critical_suggestions=[fallback_suggestion],
+            critical_suggestions=[fail_msg],
         )
 
     async def apply_reflexion_patch(self, draft: ArticleDraft, report: AcademicReviewReport, fact_pool: FactPool) -> ArticleDraft:

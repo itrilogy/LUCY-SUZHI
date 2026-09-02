@@ -497,6 +497,11 @@ class AsyncSearXNG:
         """多策略网页正文提纯 (Jina Reader 优先 + 直连 HTML 轻量提取回退)。"""
         if not url.startswith("http"):
             return ""
+        try:
+            from .security import assert_probe_url_safe
+            assert_probe_url_safe(url)
+        except Exception:
+            return ""
         
         client = self._get_client()
         # 1. 优先尝试 Jina Reader
@@ -531,3 +536,17 @@ class AsyncSearXNG:
         except Exception as e:
             logger.debug(f"Deep markdown fetch failed for {url}: {e}")
         return ""
+
+    async def enrich_snippets(self, snippets: List[SearchSnippet], top_n: int = 3) -> List[SearchSnippet]:
+        """对检索前列做正文提纯，失败则保留原 snippet。"""
+        if not snippets:
+            return snippets
+
+        async def _one(snip: SearchSnippet) -> SearchSnippet:
+            body = await self.fetch_deep_markdown(snip.url)
+            if body and len(body) > len(snip.content or ""):
+                snip.content = body
+            return snip
+
+        head = list(await asyncio.gather(*[_one(s) for s in snippets[:top_n]]))
+        return head + list(snippets[top_n:])

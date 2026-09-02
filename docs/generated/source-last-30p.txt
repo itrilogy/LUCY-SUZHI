@@ -1,3 +1,373 @@
+}
+
+function renderTaskList(tasks) {
+  const container = document.getElementById("tasksContainer");
+  if (!container) return;
+
+  if (tasks.length === 0) {
+    container.innerHTML = `<div class="empty-state">暂无历史研究任务。在主页启动深度研究即可在此管理。</div>`;
+    return;
+  }
+
+  let html = "";
+  tasks.forEach(t => {
+    const isActive = t.task_id === currentTaskId;
+    const stageBadge = getStageBadge(t.display_stage);
+    const dateStr = t.updated_at ? new Date(t.updated_at).toLocaleString() : "未知时间";
+
+    html += `
+      <div class="task-card ${isActive ? 'active' : ''}" onclick="selectTask('${t.task_id}')">
+        <div class="task-info">
+          <div class="task-title-row">
+            <span class="task-title">${escapeHtml(t.topic)}</span>
+            ${stageBadge}
+          </div>
+          <div class="task-meta">
+            <span>🆔 ${t.task_id}</span>
+            <span>🕒 ${dateStr}</span>
+            <span>📚 事实数: ${t.fact_count}</span>
+            <span>📄 字数: ${t.article_len || 0}</span>
+          </div>
+        </div>
+        <div class="task-actions" onclick="event.stopPropagation()">
+          <button class="btn-delete" title="删除任务" onclick="deleteTask('${t.task_id}')">🗑️ 删除</button>
+        </div>
+      </div>
+    `;
+  });
+  container.innerHTML = html;
+}
+
+function getStageBadge(stage) {
+  switch (stage) {
+    case "RUNNING":
+      return '<span class="task-badge running">🟢 运行中</span>';
+    case "COMPLETED":
+    case "DONE":
+      return '<span class="task-badge completed">✅ 已完成</span>';
+    case "STOPPED":
+      return '<span class="task-badge stopped">⏸️ 已中断</span>';
+    case "ERROR":
+      return '<span class="task-badge error">❌ 异常</span>';
+    default:
+      return `<span class="task-badge stopped">⚪ ${stage}</span>`;
+  }
+}
+
+function escapeHtml(text) {
+  if (!text) return "";
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+async function selectTask(taskId) {
+  const modal = document.getElementById("tasksModal");
+  if (modal) modal.classList.remove("active");
+
+  currentTaskId = taskId;
+  localStorage.setItem("storm_last_task_id", taskId);
+
+  const task = taskListCache.find(t => t.task_id === taskId);
+  if (task) {
+    const topicInput = document.getElementById("topicInput");
+    if (topicInput) topicInput.value = task.topic;
+  }
+
+  const terminal = document.getElementById("logTerminal");
+  if (terminal) terminal.innerHTML = "";
+  appendLog(`🔄 已切换至任务: ${taskId}`, "info");
+
+  const startBtn = document.getElementById("startBtn");
+  const stopBtn = document.getElementById("stopBtn");
+
+  // 若正在运行，重连 SSE
+  if (task && task.is_running) {
+    updateStatus("研究进行中...", true);
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = false;
+    connectEventStream(taskId);
+  } else {
+    // 若已完成或停止，加载文章数据并连一次 snapshot
+    updateStatus("已就绪", false);
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
+    connectEventStream(taskId);
+    fetchArticleData(taskId);
+  }
+  loadTaskList(true);
+}
+
+async function deleteTask(taskId) {
+  if (!confirm(`确定要彻底删除任务 [${taskId}] 及其所有成果文件吗？`)) return;
+  try {
+    const res = await fetch(`/api/v1/tasks/${taskId}`, { method: "DELETE" });
+    if (res.ok) {
+      if (currentTaskId === taskId) {
+        resetToNewTask();
+      }
+      loadTaskList();
+    }
+  } catch (e) {
+    alert(`删除失败: ${e.message}`);
+  }
+}
+
+// ── 页面加载时自动恢复上一次任务 ──
+async function initAutoRestore() {
+  await loadTaskList(true);
+
+  const lastTaskId = localStorage.getItem("storm_last_task_id");
+  if (lastTaskId && taskListCache.some(t => t.task_id === lastTaskId)) {
+    selectTask(lastTaskId);
+  } else if (taskListCache.length > 0) {
+    // 默认展示最新一条任务
+    selectTask(taskListCache[0].task_id);
+  }
+}
+
+// ── ⚙️ 系统设置与 ConfigHub 联动 ──
+function initSettingsModal() {
+  const openBtn = document.getElementById("openSettingsBtn");
+  const closeBtn = document.getElementById("closeSettingsBtn");
+  const cancelBtn = document.getElementById("cancelSettingsBtn");
+  const saveBtn = document.getElementById("saveSettingsBtn");
+  const modal = document.getElementById("settingsModal");
+  const toggleKeyBtn = document.getElementById("toggleKeyVisibility");
+  const keyInput = document.getElementById("llmApiKeyInput");
+  const activeLlmSelect = document.getElementById("activeLlmSelect");
+  const activeSearchSelect = document.getElementById("activeSearchSelect");
+  const probeLlmBtn = document.getElementById("probeLlmBtn");
+  const probeSearchBtn = document.getElementById("probeSearchBtn");
+
+  if (openBtn) {
+    openBtn.addEventListener("click", () => {
+      loadSettingsFromServer();
+      if (modal) modal.classList.add("active");
+    });
+  }
+
+  const closeModal = () => {
+    if (modal) modal.classList.remove("active");
+  };
+  if (closeBtn) closeBtn.addEventListener("click", closeModal);
+  if (cancelBtn) cancelBtn.addEventListener("click", closeModal);
+
+  if (toggleKeyBtn && keyInput) {
+    toggleKeyBtn.addEventListener("click", () => {
+      if (keyInput.type === "password") {
+        keyInput.type = "text";
+        toggleKeyBtn.textContent = "🙈";
+      } else {
+        keyInput.type = "password";
+        toggleKeyBtn.textContent = "👁️";
+      }
+    });
+  }
+
+  if (activeLlmSelect) {
+    activeLlmSelect.addEventListener("change", () => {
+      const pId = activeLlmSelect.value;
+      if (systemConfig && systemConfig.llm_providers[pId]) {
+        const p = systemConfig.llm_providers[pId];
+        const baseUrlEl = document.getElementById("llmBaseUrlInput");
+        const modelEl = document.getElementById("llmModelInput");
+        const probeResEl = document.getElementById("llmProbeResult");
+        if (baseUrlEl) baseUrlEl.value = p.base_url || "";
+        if (modelEl) modelEl.value = p.model || "";
+        if (keyInput) {
+          keyInput.value = "";
+          keyInput.placeholder = p.has_key ? `已配置密钥 (${p.api_key_masked})，留空保持` : "请输入 API Key";
+        }
+        if (probeResEl) probeResEl.textContent = "";
+      }
+    });
+  }
+
+  if (activeSearchSelect) {
+    activeSearchSelect.addEventListener("change", () => {
+      const pId = activeSearchSelect.value;
+      if (systemConfig && systemConfig.search_providers[pId]) {
+        const p = systemConfig.search_providers[pId];
+        const searchApiEl = document.getElementById("searchApiUrlInput");
+        const maxConcEl = document.getElementById("searchMaxConcurrentInput");
+        const probeResEl = document.getElementById("searchProbeResult");
+        if (searchApiEl) searchApiEl.value = p.api_url || "";
+        if (maxConcEl) maxConcEl.value = p.max_concurrent || 15;
+        if (probeResEl) probeResEl.textContent = "";
+      }
+    });
+  }
+
+  // 探测 LLM
+  if (probeLlmBtn) {
+    probeLlmBtn.addEventListener("click", async () => {
+      const baseUrlEl = document.getElementById("llmBaseUrlInput");
+      const baseUrl = baseUrlEl ? baseUrlEl.value.trim() : "";
+      const apiKey = keyInput ? keyInput.value.trim() : "";
+      const resultDiv = document.getElementById("llmProbeResult");
+      if (!resultDiv) return;
+      resultDiv.className = "probe-result";
+      resultDiv.textContent = "正在探测端点连通性...";
+
+      try {
+        const res = await fetch("/api/v1/config/probe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "llm", base_url: baseUrl, api_key: apiKey }),
+        });
+        const data = await res.json();
+        if (data.status === "ONLINE") {
+          resultDiv.className = "probe-result online";
+          resultDiv.textContent = `🟢 端点在线 | 延迟: ${data.rtt_ms}ms | 发现 ${data.models.length} 个模型: ${data.models.slice(0, 3).join(", ")}...`;
+          const modelInput = document.getElementById("llmModelInput");
+          if (data.models.length > 0 && modelInput && !modelInput.value) {
+            modelInput.value = data.models[0];
+          }
+        } else {
+          resultDiv.className = "probe-result offline";
+          resultDiv.textContent = `🔴 探测失败: ${data.msg || data.status}`;
+        }
+      } catch (e) {
+        resultDiv.className = "probe-result offline";
+        resultDiv.textContent = `🔴 网络异常: ${e.message}`;
+      }
+    });
+  }
+
+  // 探测搜索端点
+  if (probeSearchBtn) {
+    probeSearchBtn.addEventListener("click", async () => {
+      const apiInput = document.getElementById("searchApiUrlInput");
+      const apiUrl = apiInput ? apiInput.value.trim() : "";
+      const resultDiv = document.getElementById("searchProbeResult");
+      if (!resultDiv) return;
+      resultDiv.className = "probe-result";
+      resultDiv.textContent = "正在测试 SearXNG 连通性...";
+
+      try {
+        const res = await fetch("/api/v1/config/probe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "search", base_url: apiUrl }),
+        });
+        const data = await res.json();
+        if (data.status === "ONLINE") {
+          resultDiv.className = "probe-result online";
+          resultDiv.textContent = `🟢 检索在线 | RTT: ${data.rtt_ms}ms | 测试召回: ${data.sample_count} 条结果`;
+        } else {
+          resultDiv.className = "probe-result offline";
+          resultDiv.textContent = `🔴 检索失败: ${data.msg || data.status}`;
+        }
+      } catch (e) {
+        resultDiv.className = "probe-result offline";
+        resultDiv.textContent = `🔴 检索异常: ${e.message}`;
+      }
+    });
+  }
+
+  // 保存配置
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async () => {
+      if (!systemConfig || !activeLlmSelect || !activeSearchSelect) return;
+      const activeLlm = activeLlmSelect.value;
+      const activeSearch = activeSearchSelect.value;
+
+      const currentLlm = systemConfig.llm_providers[activeLlm];
+      const baseUrlEl = document.getElementById("llmBaseUrlInput");
+      const modelEl = document.getElementById("llmModelInput");
+      if (baseUrlEl) currentLlm.base_url = baseUrlEl.value.trim();
+      if (modelEl) currentLlm.model = modelEl.value.trim();
+      if (keyInput && keyInput.value.trim()) {
+        currentLlm.api_key = keyInput.value.trim();
+      }
+
+      const currentSearch = systemConfig.search_providers[activeSearch];
+      const searchApiEl = document.getElementById("searchApiUrlInput");
+      const maxConcEl = document.getElementById("searchMaxConcurrentInput");
+      if (searchApiEl) currentSearch.api_url = searchApiEl.value.trim();
+      if (maxConcEl) currentSearch.max_concurrent = parseInt(maxConcEl.value) || 15;
+
+      try {
+        const res = await fetch("/api/v1/config/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            active_llm_provider: activeLlm,
+            active_search_provider: activeSearch,
+            deep_research_default: true,
+            max_depth: 2,
+            llm_providers: systemConfig.llm_providers,
+            search_providers: systemConfig.search_providers,
+          }),
+        });
+        if (!res.ok) throw new Error("保存配置失败");
+        alert("✅ 配置保存成功，系统已实时热重载！");
+        closeModal();
+      } catch (e) {
+        alert(`保存失败: ${e.message}`);
+      }
+    });
+  }
+}
+
+async function loadSettingsFromServer() {
+  try {
+    const res = await fetch("/api/v1/config/providers");
+    if (!res.ok) return;
+    systemConfig = await res.json();
+
+    const activeLlmSelect = document.getElementById("activeLlmSelect");
+    const activeSearchSelect = document.getElementById("activeSearchSelect");
+
+    if (activeLlmSelect) {
+      activeLlmSelect.innerHTML = "";
+      Object.keys(systemConfig.llm_providers).forEach(pId => {
+        const p = systemConfig.llm_providers[pId];
+        const opt = document.createElement("option");
+        opt.value = pId;
+        opt.textContent = `${p.name} (${pId})`;
+        if (pId === systemConfig.active_llm_provider) opt.selected = true;
+        activeLlmSelect.appendChild(opt);
+      });
+    }
+
+    if (activeSearchSelect) {
+      activeSearchSelect.innerHTML = "";
+      Object.keys(systemConfig.search_providers).forEach(pId => {
+        const p = systemConfig.search_providers[pId];
+        const opt = document.createElement("option");
+        opt.value = pId;
+        opt.textContent = `${p.name} (${pId})`;
+        if (pId === systemConfig.active_search_provider) opt.selected = true;
+        activeSearchSelect.appendChild(opt);
+      });
+    }
+
+    // 触发联动填充
+    if (activeLlmSelect) activeLlmSelect.dispatchEvent(new Event("change"));
+    if (activeSearchSelect) activeSearchSelect.dispatchEvent(new Event("change"));
+  } catch (e) {
+    console.error("Failed to load settings:", e);
+  }
+}
+
+function initAboutModal() {
+  const overlay = document.getElementById("aboutModal");
+  const openBtn = document.getElementById("openAboutBtn");
+  const closeBtn = document.getElementById("closeAboutBtn");
+  if (!overlay) return;
+
+  const close = () => overlay.classList.remove("active");
+  if (openBtn) openBtn.addEventListener("click", () => overlay.classList.add("active"));
+  if (closeBtn) closeBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay.classList.contains("active")) close();
+  });
+}
+
+# ===== FILE: frontend/web/style.css =====
 :root {
   --luxi-green: #0D5E42;
   --origin-white: #F5F7FA;
@@ -137,7 +507,7 @@ body {
 /* ── 主体布局 ── */
 .main-layout {
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 420px 1fr;
   flex: 1;
   overflow: hidden;
 }
@@ -461,133 +831,6 @@ textarea:focus, input:focus, select:focus {
   overflow: hidden;
 }
 
-.studio-split {
-  display: grid;
-  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
-  flex: 1 1 0;
-  min-height: 0;
-  min-width: 0;
-}
-
-.dialogue-rail {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-color);
-}
-
-.dialogue-header {
-  padding: 14px 16px 10px;
-  border-bottom: 1px solid var(--border-color);
-  flex-shrink: 0;
-}
-
-.dialogue-header h2 {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-}
-
-.dialogue-sub {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
-.dialogue-thread {
-  flex: 1 1 0;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 12px 12px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.dialogue-card {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-}
-
-.dialogue-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  color: #071510;
-  background: var(--evolution-cyan);
-}
-
-.dialogue-card.host .dialogue-avatar {
-  background: var(--title-gold);
-}
-
-.dialogue-card.reviewer .dialogue-avatar {
-  background: #E8A33D;
-}
-
-.dialogue-card.scribe .dialogue-avatar {
-  background: #7CDBA5;
-}
-
-.dialogue-bubble {
-  flex: 1;
-  min-width: 0;
-  background: rgba(245, 247, 250, 0.04);
-  border: 1px solid var(--border-color);
-  border-radius: 4px 12px 12px 12px;
-  padding: 8px 10px 9px;
-}
-
-.dialogue-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-.dialogue-name {
-  font-size: 12px;
-  font-weight: 650;
-  color: var(--origin-white);
-}
-
-.dialogue-role {
-  font-size: 10px;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-}
-
-.dialogue-text {
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.dialogue-card.host .dialogue-bubble {
-  border-color: rgba(241, 196, 15, 0.28);
-  background: rgba(241, 196, 15, 0.06);
-}
-
-.article-column {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
 .content-header {
   height: 54px;
   min-height: 54px;
@@ -763,45 +1006,6 @@ textarea:focus, input:focus, select:focus {
   font-weight: 600;
   font-size: 14px;
   color: #fff;
-}
-
-.compare-bar {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.compare-bar select {
-  flex: 1;
-}
-
-.compare-diff {
-  display: none;
-  max-height: 240px;
-  overflow: auto;
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  white-space: pre-wrap;
-  margin-bottom: 12px;
-}
-
-.compare-diff.visible {
-  display: block;
-}
-
-.citation-quality {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--evolution-cyan);
-  border: 1px solid rgba(0, 210, 255, 0.3);
-  border-radius: 10px;
-  padding: 1px 8px;
 }
 
 .citation-url {
@@ -1270,17 +1474,6 @@ textarea:focus, input:focus, select:focus {
     overflow: auto;
   }
 
-  .studio-split {
-    grid-template-columns: 1fr;
-    min-height: 52vh;
-  }
-
-  .dialogue-rail {
-    border-right: none;
-    border-bottom: 1px solid var(--border-color);
-    max-height: 280px;
-  }
-
   .control-panel {
     border-right: none;
     border-bottom: 1px solid var(--border-color);
@@ -1304,3 +1497,4 @@ textarea:focus, input:focus, select:focus {
     padding: 10px 16px;
   }
 }
+

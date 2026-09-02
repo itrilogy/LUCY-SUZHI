@@ -87,7 +87,7 @@ class AsyncReranker:
         if not documents:
             return []
         if not self.api_base:
-            return [(i, 1.0) for i in range(min(len(documents), top_k))]
+            return []
 
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         url = f"{self.api_base}/rerank" if not self.api_base.endswith("/rerank") else self.api_base
@@ -113,4 +113,4 @@ class AsyncReranker:
             except Exception as e:
                 logger.warning(f"AsyncReranker error: {e}")
 
-        return [(i, 1.0) for i in range(min(len(documents), top_k))]
+        return []

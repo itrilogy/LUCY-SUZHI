@@ -12,6 +12,7 @@ STORM Async Core — 异步知识策展流水线 (AsyncSTORMPipeline)
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from pathlib import Path
@@ -37,6 +38,8 @@ from .diagram_generator import DiagramGenerator
 from .reviewer import AcademicReviewer, AcademicReviewReport
 from .exporter import MultiFormatExporter
 from .local_knowledge_hub import LocalKnowledgeHub
+from .encoder_reranker import AsyncReranker
+from .typst_compiler import TypstCompiler
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +78,16 @@ class AsyncSTORMPipeline:
         self.diagram_gen = DiagramGenerator(llm=self.llm)
         self.reviewer = AcademicReviewer(llm=self.llm)
         self.exporter = MultiFormatExporter()
-        self.kb_hub = LocalKnowledgeHub()
+        self.kb_hub = LocalKnowledgeHub(db_path=self.output_dir / "local_knowledge.db")
+        rerank_base = os.environ.get("SUZHI_RERANK_API_BASE", "").strip()
+        self.reranker = (
+            AsyncReranker(
+                api_base=rerank_base,
+                api_key=os.environ.get("SUZHI_RERANK_API_KEY", ""),
+            )
+            if rerank_base
+            else None
+        )
 
     async def run(
         self,
@@ -224,6 +236,51 @@ Format your output strictly as numbered lines:
                 ]
         return personas[: self.max_perspectives]
 
+    async def _search_and_enrich(self, query: str) -> List[SearchSnippet]:
+        snippets = await self.retriever.search(query, top_k=self.search_top_k)
+        if not hasattr(self.retriever, "local_index"):
+            enrich = getattr(self.retriever, "enrich_snippets", None)
+            if enrich:
+                snippets = await enrich(snippets, top_n=min(3, len(snippets)))
+        if self.reranker and snippets:
+            docs = [f"{s.title}\n{s.content}" for s in snippets]
+            ranked = await self.reranker.rerank(query, docs, top_k=len(snippets))
+            if ranked:
+                ordered, seen = [], set()
+                for idx, _score in ranked:
+                    if 0 <= idx < len(snippets) and idx not in seen:
+                        ordered.append(snippets[idx])
+                        seen.add(idx)
+                snippets = ordered + [s for i, s in enumerate(snippets) if i not in seen]
+        return snippets
+
+    def _inject_prior_knowledge(
+        self,
+        topic: str,
+        fact_pool: FactPool,
+        progress_cb: Optional[Callable[[str, Any], None]],
+    ) -> None:
+        priors = self.kb_hub.search_prior_knowledge(topic, limit=8)
+        added = 0
+        samples = []
+        for p in priors:
+            url = (p.get("source_url") or "").strip()
+            claim = (p.get("claim") or "").strip()
+            if not url or not claim:
+                continue
+            fact_pool.add_fact(
+                claim=claim,
+                url=url,
+                title=p.get("source_title") or "",
+                perspective="先验知识库",
+                source_quality=0.9,
+                engine="local_kb",
+            )
+            added += 1
+            samples.append(claim[:80])
+        if added and progress_cb:
+            progress_cb("PRIOR_KNOWLEDGE", {"count": added, "samples": samples[:3]})
+
     async def _stage_curate_deep_exploration(
         self,
         topic: str,
@@ -237,9 +294,10 @@ Format your output strictly as numbered lines:
             gain_threshold=0.2,
         )
         fact_pool = FactPool()
+        self._inject_prior_knowledge(topic, fact_pool, progress_cb)
 
         async def _retriever_adapter(query: str):
-            return await self.retriever.search(query, top_k=self.search_top_k)
+            return await self._search_and_enrich(query)
 
         dialogues = await tree.explore_topic_recursively(
             topic=topic,
@@ -257,6 +315,7 @@ Format your output strictly as numbered lines:
         progress_cb: Optional[Callable[[str, Any], None]],
     ) -> tuple[FactPool, List[DialogueTurn]]:
         fact_pool = FactPool()
+        self._inject_prior_knowledge(topic, fact_pool, progress_cb)
         dialogues: List[DialogueTurn] = []
 
         async def _run_persona_dialogue(persona: Persona) -> List[DialogueTurn]:
@@ -276,7 +335,7 @@ Ask a specific, insightful research question related to the topic from your pers
                 clean_topic = topic.replace("的研究", "").replace("的作用", "").strip()[:20]
                 clean_q = question.replace("？", "").replace("?", "").strip()[:20]
                 search_query = f"{clean_topic} {clean_q}".strip()[:35]
-                snippets = await self.retriever.search(search_query, top_k=self.search_top_k)
+                snippets = await self._search_and_enrich(search_query)
 
                 snippets_text = "\n".join([f"[{s.title}] {s.content}" for s in snippets])
                 a_prompt = f"""Topic: {topic}
@@ -296,6 +355,7 @@ Synthesize a factual, informative response answering the question with source ev
                             perspective=persona.name,
                             source_quality=getattr(s, "source_quality", 1.0),
                             confidence=1.0,
+                            engine=getattr(s, "engine", "") or "",
                         )
 
                 turn_record = DialogueTurn(
@@ -549,6 +609,7 @@ Requirements:
             # 导出自包含离线 HTML 研报
             report_html = self.exporter.generate_standalone_html_report(checkpoint.article_draft)
             (task_dir / "report_standalone.html").write_text(report_html, encoding="utf-8")
+            TypstCompiler().compile_pdf(checkpoint.article_draft, str(task_dir / "paper.pdf"))
 
         if checkpoint.outline:
             (task_dir / "outline.md").write_text(checkpoint.outline.to_markdown(), encoding="utf-8")

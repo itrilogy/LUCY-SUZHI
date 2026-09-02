@@ -18,6 +18,7 @@ build/
 *.egg-info/
 .idea
 .venv/
+path/to/venv/
 .pytest_cache/
 
 # Project-specific
@@ -33,3 +34,4 @@ results_deepseek/
 .reasonix/
 reasonix.toml
 frontend/demo_light/DEMO_WORKING_DIR/
+docs/generated/source-all.txt

@@ -1,18 +1,185 @@
-// STORM 现代化前端交互逻辑 (SSE Stream Client + ConfigHub Settings + 任务中心与状态恢复)
+// 溯知 · SuZhi 控制台：SSE、研讨对话、配置中心、任务恢复
 
 let currentEventSource = null;
 let currentTaskId = null;
 let allCitations = {};
 let systemConfig = null;
 let taskListCache = [];
+let resumeTaskId = null;
+let lastExpertName = "";
+let personaMeta = {};
+let seminarWatermark = "";
+let muteSpeak = false;
+const ROLE_COLORS = ["#00D2FF", "#7CDBA5", "#82A0C4", "#4FC3C7", "#E8A33D", "#9ad8c4"];
 
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   initActionButtons();
   initSettingsModal();
   initTasksModal();
+  initAboutModal();
+  initKnowledgeModal();
+  resetDialogue();
   initAutoRestore();
 });
+
+function apiHeaders(jsonBody) {
+  const headers = {};
+  if (jsonBody) headers["Content-Type"] = "application/json";
+  const tok = localStorage.getItem("suzhi_api_token") || "";
+  if (tok) headers["X-SuZhi-Token"] = tok;
+  return headers;
+}
+
+function withTokenQuery(url) {
+  const tok = localStorage.getItem("suzhi_api_token") || "";
+  if (!tok) return url;
+  return url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok);
+}
+
+async function apiFetch(url, opts = {}) {
+  const headers = { ...apiHeaders(Boolean(opts.body)), ...(opts.headers || {}) };
+  return fetch(url, { ...opts, headers });
+}
+
+async function readError(res, fallback) {
+  try {
+    const data = await res.json();
+    if (typeof data.detail === "string") return data.detail;
+    if (Array.isArray(data.detail)) return data.detail.map((d) => d.msg || d).join("; ");
+  } catch (_e) {}
+  return fallback || res.statusText || "请求失败";
+}
+
+function escapeHtml(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function sanitizeHtml(html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const forbidden = new Set(["SCRIPT", "IFRAME", "OBJECT", "EMBED", "LINK", "META", "BASE", "FORM", "SVG"]);
+  const walk = (node) => {
+    [...node.childNodes].forEach((child) => {
+      if (child.nodeType !== 1) return;
+      if (forbidden.has(child.tagName)) {
+        child.remove();
+        return;
+      }
+      [...child.attributes].forEach((attr) => {
+        const name = attr.name.toLowerCase();
+        const value = attr.value || "";
+        if (name.startsWith("on") || name === "srcdoc" || name === "style") {
+          child.removeAttribute(attr.name);
+        }
+        if ((name === "href" || name === "src" || name === "xlink:href") && /^\s*javascript:/i.test(value)) {
+          child.removeAttribute(attr.name);
+        }
+      });
+      walk(child);
+    });
+  };
+  walk(tpl.content);
+  return tpl.innerHTML;
+}
+
+function registerPersona(name, description) {
+  if (!name) return;
+  if (!personaMeta[name]) {
+    const idx = Object.keys(personaMeta).length % ROLE_COLORS.length;
+    personaMeta[name] = {
+      color: ROLE_COLORS[idx],
+      initial: name.trim().slice(0, 1) || "视",
+      description: description || "",
+    };
+  }
+}
+
+function resetDialogue(hostLine) {
+  personaMeta = {};
+  lastExpertName = "";
+  seminarWatermark = "";
+  muteSpeak = false;
+  const thread = document.getElementById("dialogueThread");
+  if (thread) thread.replaceChildren();
+  if (hostLine === false) return;
+  speakHost(
+    hostLine ||
+      "我是主持人。课题定下之后，我会请来各位视角嘉宾对谈：检索、分歧与成章的节奏由我报幕，专业判断交给他们。"
+  );
+}
+
+function ingestSeminar(items) {
+  if (!items || !items.length) return;
+  for (const u of items) {
+    if (u.ts && seminarWatermark && u.ts <= seminarWatermark) continue;
+    speak({
+      kind: u.kind,
+      name: u.name,
+      roleLabel: u.role_label || u.roleLabel || "",
+      text: u.text,
+      color: u.color,
+    });
+    if (u.ts) seminarWatermark = u.ts;
+  }
+}
+
+function speak({ kind, name, roleLabel, text, color }) {
+  if (muteSpeak) return;
+  const thread = document.getElementById("dialogueThread");
+  if (!thread || !text) return;
+  const card = document.createElement("article");
+  card.className = `dialogue-card ${kind || "expert"}`;
+  const avatar = document.createElement("div");
+  avatar.className = "dialogue-avatar";
+  avatar.textContent = (name || "主").trim().slice(0, 1);
+  if (color) avatar.style.background = color;
+  const bubble = document.createElement("div");
+  bubble.className = "dialogue-bubble";
+  const meta = document.createElement("div");
+  meta.className = "dialogue-meta";
+  const nameEl = document.createElement("span");
+  nameEl.className = "dialogue-name";
+  nameEl.textContent = name || "主持人";
+  const roleEl = document.createElement("span");
+  roleEl.className = "dialogue-role";
+  roleEl.textContent = roleLabel || "";
+  meta.appendChild(nameEl);
+  if (roleLabel) meta.appendChild(roleEl);
+  const body = document.createElement("div");
+  body.className = "dialogue-text";
+  body.textContent = text;
+  bubble.appendChild(meta);
+  bubble.appendChild(body);
+  card.appendChild(avatar);
+  card.appendChild(bubble);
+  thread.appendChild(card);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function speakHost(text) {
+  speak({ kind: "host", name: "主持人", roleLabel: "调度", text, color: "#F1C40F" });
+}
+
+function speakExpert(name, text) {
+  registerPersona(name);
+  const meta = personaMeta[name] || {};
+  lastExpertName = name;
+  speak({ kind: "expert", name, roleLabel: "视角", text, color: meta.color });
+}
+
+function speakReviewer(text) {
+  speak({ kind: "reviewer", name: "审稿人", roleLabel: "红蓝对抗", text, color: "#E8A33D" });
+}
+
+function speakScribe(text) {
+  speak({ kind: "scribe", name: "书记员", roleLabel: "成章", text, color: "#7CDBA5" });
+}
 
 // ── Tab 切换 ──
 function initTabs() {
@@ -49,15 +216,8 @@ function initActionButtons() {
   if (newTaskBtn) newTaskBtn.addEventListener("click", resetToNewTask);
 }
 
-function appendLog(message, type = "info") {
-  const terminal = document.getElementById("logTerminal");
-  if (!terminal) return;
-  const line = document.createElement("div");
-  line.className = `log-line ${type}`;
-  const time = new Date().toLocaleTimeString();
-  line.textContent = `[${time}] ${message}`;
-  terminal.appendChild(line);
-  terminal.scrollTop = terminal.scrollHeight;
+function appendLog(message, _type = "info") {
+  speakHost(message);
 }
 
 function updateStatus(text, isBusy = false) {
@@ -137,18 +297,26 @@ function resetToNewTask() {
   updateStatus("就绪", false);
 
   resetTimeline();
-  const terminal = document.getElementById("logTerminal");
-  if (terminal) terminal.innerHTML = '<div class="log-line info">等待任务启动...</div>';
-  
+  resetDialogue();
+  resumeTaskId = null;
+
   const renderContainer = document.getElementById("articleRender");
   if (renderContainer) {
-    renderContainer.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">📝</div>
-        <h3>尚未生成研究成果</h3>
-        <p>在左侧输入研究主题并点击“启动深度研究”，全流程长文与证据链将在此实时呈现。</p>
-      </div>
-    `;
+    renderContainer.replaceChildren();
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    const img = document.createElement("img");
+    img.className = "empty-mark";
+    img.src = "/static/brand/suzhi-mark.svg";
+    img.width = 64;
+    img.height = 64;
+    img.alt = "";
+    const h3 = document.createElement("h3");
+    h3.textContent = "尚未生成研究成果";
+    const p = document.createElement("p");
+    p.textContent = "在左侧输入研究主题并启动深度研究。研讨现场的对谈会与正文并排展开。";
+    empty.append(img, h3, p);
+    renderContainer.appendChild(empty);
   }
   const citContainer = document.getElementById("citationsList");
   if (citContainer) citContainer.innerHTML = '<div class="empty-state">暂无参考文献</div>';
@@ -183,35 +351,37 @@ async function startResearchTask() {
   if (stopBtn) stopBtn.disabled = false;
   updateStatus("研究进行中...", true);
 
-  const terminal = document.getElementById("logTerminal");
-  if (terminal) terminal.innerHTML = "";
-  appendLog(`正在启动研究任务: "${topic}"...`, "info");
+  resetDialogue(false);
   resetTimeline();
 
   try {
-    const res = await fetch("/api/v1/research/start", {
+    const payload = {
+      topic: topic,
+      deep_research: deepResearch,
+      max_depth: maxDepth,
+      perspectives: perspectives,
+      local_docs_dir: localDocsDir,
+    };
+    if (resumeTaskId) payload.resume_task_id = resumeTaskId;
+    const resuming = Boolean(resumeTaskId);
+    resumeTaskId = null;
+
+    const res = await apiFetch("/api/v1/research/start", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        topic: topic,
-        deep_research: deepResearch,
-        max_depth: maxDepth,
-        perspectives: perspectives,
-        local_docs_dir: localDocsDir,
-      }),
+      body: JSON.stringify(payload),
     });
 
-    if (!res.ok) throw new Error(`服务异常: ${res.statusText}`);
+    if (!res.ok) throw new Error(await readError(res, "服务异常"));
 
     const data = await res.json();
     currentTaskId = data.task_id;
     localStorage.setItem("storm_last_task_id", currentTaskId);
-    appendLog(`任务已分配 ID: ${currentTaskId}`, "success");
+    speakHost(resuming ? `从断点继续，场次编号 ${currentTaskId}。` : `本场研讨编号 ${currentTaskId}。`);
 
     loadTaskList(true);
     connectEventStream(currentTaskId);
   } catch (err) {
-    appendLog(`启动失败: ${err.message}`, "error");
+    speakHost(`没能开场：${err.message}`);
     if (startBtn) startBtn.disabled = false;
     if (stopBtn) stopBtn.disabled = true;
     updateStatus("发生错误", false);
@@ -230,7 +400,7 @@ function connectEventStream(taskId, retryCount = 0) {
     sseReconnectTimer = null;
   }
 
-  currentEventSource = new EventSource(`/api/v1/research/stream/${taskId}`);
+  currentEventSource = new EventSource(withTokenQuery(`/api/v1/research/stream/${taskId}`));
 
   currentEventSource.onmessage = (event) => {
     retryCount = 0; // 收到数据重置重试计数
@@ -266,13 +436,22 @@ function handleServerEvent(event) {
   if (pct !== undefined && pct !== null) {
     let hint = "进行中...";
     if (pct >= 100) hint = "已完成";
-    else if (pct >= 70) hint = "正文生成中 (~15s)";
-    else if (pct >= 20) hint = "深度策展中 (~35s)";
+    else if (pct >= 70) hint = "正文生成中";
+    else if (pct >= 20) hint = "知识策展中";
     updateProgressAndTokens(pct, tokens, hint);
   } else if (tokens !== undefined) {
     updateProgressAndTokens(null, tokens);
   }
 
+  const fromServer = Array.isArray(event.seminar) && event.seminar.length > 0;
+  if (stage !== "STAGE_SNAPSHOT" && fromServer) {
+    ingestSeminar(event.seminar);
+    muteSpeak = true;
+  } else {
+    muteSpeak = false;
+  }
+
+  try {
   switch (stage) {
     case "STAGE_SNAPSHOT":
       handleStageSnapshot(data);
@@ -280,124 +459,149 @@ function handleServerEvent(event) {
 
     case "DISCOVERY_START":
       setTimelineStep(1, "active", "提取专家视角中...");
-      appendLog("🔍 开始生成多维度专家视角矩阵...", "info");
+      speakHost("先请几位视角嘉宾入座。我去对一下各自的专长。");
       break;
 
     case "DISCOVERY_COMPLETE":
       setTimelineStep(1, "completed", `生成 ${data.personas ? data.personas.length : 0} 个视角`);
-      if (data.personas) {
-        data.personas.forEach(p => {
-          appendLog(`  • 视角: ${p.name} - ${p.description}`, "success");
+      if (data.personas && data.personas.length) {
+        speakHost(`请来 ${data.personas.length} 位嘉宾。请各位先自报家门。`);
+        data.personas.forEach((p) => {
+          registerPersona(p.name, p.description);
+          speakExpert(p.name, p.description || "从本视角跟进这一课题。");
         });
+      } else {
+        speakHost("视角名单还没拟好，我用默认席位继续。");
       }
       break;
 
     case "CURATION_START":
       setTimelineStep(2, "active", "检索与事实提炼中...");
-      appendLog("📚 进入多源知识策展与事实沉淀阶段...", "info");
+      speakHost("进入策展。请各位带着问题去找证据，有分歧就摊在桌上。");
       break;
 
     case "DEEP_RESEARCH_TREE_ACTIVE":
-      appendLog("  ↳ 启用动态递归探索树 (Tree-of-Thoughts)...", "info");
+      speakHost("这一场走深度探索树：增益不够就停，够了再往下问。");
       break;
 
     case "DEEP_EXPLORATION_NODE_START":
-      appendLog(`🔍 [节点探索 (层级 ${data.depth})] ${data.perspective}: "${data.query}"`, "info");
+      if (data.perspective) {
+        speakExpert(
+          data.perspective,
+          `我从第 ${data.depth ?? "?"} 层追问：${data.query || "继续检索。"}`
+        );
+      } else {
+        speakHost(`下钻一层（深度 ${data.depth}）：${data.query || ""}`);
+      }
       break;
 
     case "SEARCH_ISSUED":
-      appendLog(`  ↳ 🌐 [SearXNG 检索发起] "${data.query}"`, "search");
+      speakHost(`检索发出：「${data.query || ""}」`);
       break;
 
     case "SEARCH_HITS":
       if (data.samples && data.samples.length > 0) {
-        const sampleTitles = data.samples.map(s => s.title).join(" | ");
-        appendLog(`  ↳ 📄 命中 ${data.count} 篇权威源: ${sampleTitles}`, "search");
+        const sampleTitles = data.samples.map((s) => s.title).filter(Boolean).join("；");
+        speakHost(`这一轮命中 ${data.count} 篇。例如：${sampleTitles}`);
       }
       break;
 
-    case "FACTS_EXTRACTED":
-      appendLog(`  ↳ 💡 提炼原子事实 (增益评分: ${(data.gain_score || 0).toFixed(2)}): ${data.facts ? data.facts.join("；") : ''}`, "fact");
+    case "FACTS_EXTRACTED": {
+      const facts = (data.facts || []).filter(Boolean).join("；");
+      const gain = Number(data.gain_score || 0).toFixed(2);
+      const speaker = lastExpertName || data.perspective;
+      const line = `我记下这些事实（增益 ${gain}）：${facts || "这一轮没有新的可靠陈述。"}`;
+      if (speaker) speakExpert(speaker, line);
+      else speakHost(line);
       break;
+    }
 
     case "DECISION_BRANCH":
-      appendLog(`  ↳ 🌲 [深度决策] 增益达标 (Gain ${(data.gain || 0).toFixed(2)})，生成深度下钻盲区: ${(data.derived_queries || []).join("、")}`, "decision");
+      speakHost(
+        `增益 ${(data.gain || 0).toFixed(2)}，还值得往下问：${(data.derived_queries || []).join("；") || "派生问题待拟。"}`
+      );
       break;
 
     case "DECISION_SATURATE":
-      appendLog(`  ↳ 🛑 [深度决策] ${data.reason} (Gain ${(data.gain || 0).toFixed(2)})`, "warn");
+      speakHost(`${data.reason || "这一支先到此。"}（增益 ${(data.gain || 0).toFixed(2)}）`);
       break;
 
     case "CURATION_COMPLETE":
       setTimelineStep(2, "completed", `沉淀 ${data.fact_count} 条事实`);
-      appendLog(`✅ 事实池构建完毕，累计沉淀 ${data.fact_count} 条核心事实`, "success");
+      speakHost(`策展告一段落，事实池里现有 ${data.fact_count} 条。下面请书记员排大纲。`);
       break;
 
     case "OUTLINE_START":
       setTimelineStep(3, "active", "编排学术大纲...");
-      appendLog("📑 正在生成结构化学术大纲...", "info");
+      speakScribe("我来把刚才的证据收成章节骨架。");
       break;
 
     case "OUTLINE_COMPLETE":
       setTimelineStep(3, "completed", "大纲已确立");
       if (data.section_titles && data.section_titles.length > 0) {
-        appendLog(`✅ 学术大纲确立 (${data.section_titles.length} 个核心章节: ${data.section_titles.join(" → ")})`, "success");
+        speakScribe(`大纲 ${data.section_titles.length} 章：${data.section_titles.join(" → ")}`);
       } else {
-        appendLog("✅ 学术大纲生成完成", "success");
+        speakScribe("大纲已经立住。");
       }
       break;
 
     case "WRITING_START":
       setTimelineStep(4, "active", "章节并行起草中...");
-      appendLog("✍️ 正在并行起草章节并构建事实图谱...", "info");
+      speakHost("请书记员按章起草。图谱若有口径冲突，一并写进对照。");
       break;
 
     case "FACT_GRAPH_EXTRACTING":
-      appendLog("  ↳ 正在进行跨信源冲突与事实图谱裁决...", "info");
+      speakHost("正在核对跨信源关系与分歧。");
       break;
 
     case "FACT_GRAPH_COMPLETE":
-      appendLog(`🕸️ 实体图谱抽取完成: 提炼三元组 ${data.triples_count || 0} 条，识别口径差异 ${data.conflicts_count || 0} 处`, "info");
+      speakHost(
+        `图谱抽出 ${data.triples_count || 0} 条关系，口径差异 ${data.conflicts_count || 0} 处。`
+      );
       if (data.sample_triples && data.sample_triples.length > 0) {
-        appendLog(`  ↳ 样例三元组: ${data.sample_triples.join(" | ")}`, "info");
+        speakHost(`例如：${data.sample_triples.join("；")}`);
       }
       break;
 
     case "SECTION_WRITING_START":
-      appendLog(`  ↳ ✍️ 正在起草章节: 《${data.section}》...`, "info");
+      speakScribe(`正在写《${data.section || "未名章节"}》。`);
       break;
 
     case "SECTION_WRITTEN":
-      appendLog(`  ✓ 章节《${data.section}》起草完成 (字数: ${data.char_count || 0}${data.has_diagram ? '，含机制图' : ''})`, "success");
+      speakScribe(
+        `《${data.section || "未名章节"}》初稿 ${data.char_count || 0} 字${data.has_diagram ? "，附机制图" : ""}。`
+      );
       break;
 
     case "WRITING_COMPLETE":
       setTimelineStep(4, "completed", `完成正文 (${data.article_len} 字)`);
-      appendLog(`✅ 正文初稿合成完毕，抽取实体关系 ${data.triples_count || 0} 条`, "success");
+      speakScribe(`初稿合成，约 ${data.article_len} 字。请审稿人过目。`);
       break;
 
     case "REVIEW_START":
-      appendLog("⚖️ 正在进行学术红蓝对抗评审...", "info");
+      speakReviewer("我按学术规范做红蓝对抗：引用、断言、结构，一处一处看。");
       break;
 
     case "REVIEW_COMPLETE":
-      appendLog(`  ✓ 学术综合评分: ${data.score} / 100 (${data.passed ? '学术规范达标' : '触发反思修订'})`, data.passed ? "success" : "warn");
+      speakReviewer(
+        `综合 ${data.score} / 100。${data.passed ? "这一稿可以过。" : "还不到线，我建议局部修订。"}`
+      );
       if (data.suggestions && data.suggestions.length > 0) {
-        appendLog(`  ↳ 评审优化意见: ${data.suggestions.join("；")}`, "warn");
+        speakReviewer(`意见：${data.suggestions.join("；")}`);
       }
       break;
 
     case "REFLEXION_ACTIVE":
-      appendLog("  ↳ 触发自适应反思修正补丁...", "warn");
+      speakReviewer("按刚才的意见打补丁，只动有问题的段落。");
       break;
 
     case "REFLEXION_PATCH_APPLIED":
-      appendLog(`  ✓ 反思补丁应用完毕，最新正文扩充至 ${data.new_len || 0} 字`, "success");
+      speakScribe(`补丁已打上，正文现约 ${data.new_len || 0} 字。`);
       break;
 
     case "POLISH_START":
       setTimelineStep(5, "active", "结构一致性润色...");
-      appendLog("✨ 正在进行最终润色与排版对齐...", "info");
+      speakHost("最后对标题与排版收一遍，准备成章。");
       break;
 
     case "COMPLETED":
@@ -407,7 +611,7 @@ function handleServerEvent(event) {
       setTimelineStep(3, "completed", "大纲已完成");
       setTimelineStep(4, "completed", "正文起草完成");
       setTimelineStep(5, "completed", "研究全流程完成");
-      appendLog("🎉 深度长文研究全流程执行完毕！", "success");
+      speakHost("本场结束。右侧是成稿，引用仍可回溯到各位刚才举过的证据。");
       updateStatus("已就绪", false);
       const sBtn = document.getElementById("startBtn");
       const eBtn = document.getElementById("stopBtn");
@@ -419,7 +623,7 @@ function handleServerEvent(event) {
       break;
 
     case "STOPPED":
-      appendLog(`⚠️ ${data.message || '任务已手动终止'}`, "warn");
+      speakHost(data.message || "这一场先停在这里。可在任务列表里续开。");
       updateStatus("已中断", false);
       const sBtn2 = document.getElementById("startBtn");
       const eBtn2 = document.getElementById("stopBtn");
@@ -430,7 +634,7 @@ function handleServerEvent(event) {
       break;
 
     case "ERROR":
-      appendLog(`❌ 流程发生异常: ${data.error}`, "error");
+      speakHost(`这一场出了差错：${data.error || "未知错误"}`);
       updateStatus("发生错误", false);
       const sBtn3 = document.getElementById("startBtn");
       const eBtn3 = document.getElementById("stopBtn");
@@ -440,6 +644,9 @@ function handleServerEvent(event) {
       loadTaskList(true);
       break;
   }
+  } finally {
+    muteSpeak = false;
+  }
 }
 
 // ── 处理重连时的快照回放 ──
@@ -448,7 +655,15 @@ function handleStageSnapshot(data) {
   if (data.topic && topicInput && !topicInput.value) {
     topicInput.value = data.topic;
   }
-  appendLog(`🔄 已恢复任务快照 (状态: ${data.stage}，事实数: ${data.fact_count})`, "info");
+  if (data.personas) {
+    data.personas.forEach((p) => registerPersona(p.name, p.description));
+  }
+  if (Array.isArray(data.seminar_log) && data.seminar_log.length) {
+    resetDialogue(false);
+    ingestSeminar(data.seminar_log);
+  } else {
+    speakHost(`接上一次的场次（阶段 ${data.stage}，已有事实 ${data.fact_count || 0} 条）。`);
+  }
 
   const stage = data.stage;
   const stageOrder = ["INIT", "DISCOVERY", "CURATION", "OUTLINE", "WRITING", "COMPLETED"];
@@ -468,7 +683,7 @@ function handleStageSnapshot(data) {
 // ── 获取完整长文与引用（集成 Mermaid 矢量图表渲染）──
 async function fetchArticleData(taskId) {
   try {
-    const res = await fetch(`/api/v1/research/article/${taskId}`);
+    const res = await apiFetch(`/api/v1/research/article/${taskId}`);
     if (!res.ok) return;
 
     const data = await res.json();
@@ -490,48 +705,57 @@ async function fetchArticleData(taskId) {
 
 async function renderMarkdownAndMermaid(articleMd, renderContainer) {
   if (!renderContainer) return;
-  if (typeof marked === "undefined") {
+  const parseMd = (md) => {
+    if (typeof marked === "undefined") return null;
+    if (typeof marked.parse === "function") return marked.parse(md);
+    if (marked.marked && typeof marked.marked.parse === "function") return marked.marked.parse(md);
+    if (typeof marked === "function") return marked(md);
+    return null;
+  };
+  const parsed = parseMd(articleMd || "");
+  if (parsed == null) {
     renderContainer.textContent = articleMd;
     return;
   }
 
-  // 1. 将 Markdown 解析为基础 HTML
-  let rawHtml = marked.parse(articleMd);
+  renderContainer.innerHTML = sanitizeHtml(parsed);
 
-  // 2. 将 language-mermaid 代码块无损转换为 div.mermaid 并还原 HTML 实体
-  rawHtml = rawHtml.replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/gi, (match, p1) => {
-    const unescaped = p1
-      .replace(/&gt;/g, ">")
-      .replace(/&lt;/g, "<")
-      .replace(/&amp;/g, "&")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
-    return `<div class="mermaid-wrapper"><div class="mermaid">${unescaped.trim()}</div></div>`;
+  renderContainer.querySelectorAll("pre code.language-mermaid").forEach((code) => {
+    const wrap = document.createElement("div");
+    wrap.className = "mermaid-wrapper";
+    const mermaidNode = document.createElement("div");
+    mermaidNode.className = "mermaid";
+    mermaidNode.textContent = code.textContent || "";
+    wrap.appendChild(mermaidNode);
+    if (code.parentElement) code.parentElement.replaceWith(wrap);
   });
 
-  // 3. 将正文中的引用标识 [1], [2] 自动转为交互式上标徽标
-  rawHtml = rawHtml.replace(/\[(\d+)\](?!\()/g, (match, p1) => {
-    return `<sup class="citation-ref-wrapper"><a href="#ref-${p1}" class="citation-ref-badge" onclick="highlightCitation(${p1}, event)">[${p1}]</a></sup>`;
+  renderContainer.innerHTML = sanitizeHtml(
+    renderContainer.innerHTML.replace(/\[(\d+)\](?!\()/g, (_m, n) => {
+      return `<sup class="citation-ref-wrapper"><a href="#ref-${n}" class="citation-ref-badge" data-cite="${n}">[${n}]</a></sup>`;
+    })
+  );
+  renderContainer.querySelectorAll("a.citation-ref-badge").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      highlightCitation(a.getAttribute("data-cite"), e);
+    });
   });
 
-  renderContainer.innerHTML = rawHtml;
-
-  // 4. 异步调用 Mermaid.js 渲染引擎
   if (typeof mermaid !== "undefined") {
     try {
       mermaid.initialize({
         startOnLoad: false,
         theme: "dark",
-        securityLevel: "loose",
+        securityLevel: "strict",
         themeVariables: {
           darkMode: true,
-          background: "#12161f",
-          primaryColor: "#6366f1",
-          primaryTextColor: "#f8fafc",
-          primaryBorderColor: "#818cf8",
-          lineColor: "#94a3b8",
-          secondaryColor: "#1e293b",
-          tertiaryColor: "#0f172a"
+          background: "#0C1F18",
+          primaryColor: "#0D5E42",
+          primaryTextColor: "#F5F7FA",
+          primaryBorderColor: "#00D2FF",
+          lineColor: "#A8B8B2",
+          secondaryColor: "#123028",
+          tertiaryColor: "#071510"
         }
       });
       await mermaid.run({
@@ -547,7 +771,7 @@ async function renderMarkdownAndMermaid(articleMd, renderContainer) {
 function highlightCitation(idx, e) {
   if (e) e.preventDefault();
   // 切换到参考文献 Tab
-  const citTabBtn = document.querySelector('.tab-btn[data-target="citationsPane"]');
+  const citTabBtn = document.querySelector('.tab-btn[data-target="citationsTab"]');
   if (citTabBtn) citTabBtn.click();
 
   setTimeout(() => {
@@ -570,33 +794,58 @@ function renderCitationsList(citations) {
   if (countSpan) countSpan.textContent = keys.length;
 
   if (keys.length === 0) {
-    container.innerHTML = `<div class="empty-state">暂无参考文献</div>`;
+    container.replaceChildren();
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "暂无参考文献";
+    container.appendChild(empty);
     return;
   }
 
-  let html = "";
-  keys.sort((a, b) => parseInt(a) - parseInt(b)).forEach(key => {
-    const item = citations[key];
-    const snippets = (item.snippets || []).join("\n\n");
-    html += `
-      <div class="citation-card" id="ref-${key}">
-        <div class="citation-header">
-          <span class="citation-index">[${key}]</span>
-          <span class="citation-title">${item.title || "Unknown Title"}</span>
-        </div>
-        <div class="citation-url"><a href="${item.url}" target="_blank">${item.url}</a></div>
-        <div class="citation-snippets">${snippets || "暂无摘录"}</div>
-      </div>
-    `;
+  container.replaceChildren();
+  keys.sort((a, b) => parseInt(a, 10) - parseInt(b, 10)).forEach((key) => {
+    const item = citations[key] || {};
+    const card = document.createElement("div");
+    card.className = "citation-card";
+    card.id = `ref-${key}`;
+    const header = document.createElement("div");
+    header.className = "citation-header";
+    const idx = document.createElement("span");
+    idx.className = "citation-index";
+    idx.textContent = `[${key}]`;
+    const title = document.createElement("span");
+    title.className = "citation-title";
+    title.textContent = item.title || "未命名来源";
+    header.append(idx, title);
+    if (item.source_quality || item.engine) {
+      const meta = document.createElement("span");
+      meta.className = "citation-quality";
+      const q = Number(item.source_quality || 0);
+      const label = q >= 1.15 ? "学术" : q >= 1.0 ? "综合" : "一般";
+      meta.textContent = item.engine ? `${label} · ${item.engine}` : label;
+      header.appendChild(meta);
+    }
+    const urlRow = document.createElement("div");
+    urlRow.className = "citation-url";
+    const link = document.createElement("a");
+    link.href = item.url || "#";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = item.url || "";
+    urlRow.appendChild(link);
+    const snip = document.createElement("div");
+    snip.className = "citation-snippets";
+    snip.textContent = (item.snippets || []).join("\n\n") || "暂无摘录";
+    card.append(header, urlRow, snip);
+    container.appendChild(card);
   });
-  container.innerHTML = html;
 }
 
 // ── 手动中断任务 ──
 async function stopCurrentTask() {
   if (!currentTaskId) return;
   try {
-    const res = await fetch(`/api/v1/research/stop/${currentTaskId}`, { method: "POST" });
+    const res = await apiFetch(`/api/v1/research/stop/${currentTaskId}`, { method: "POST" });
     if (res.ok) {
       appendLog("⚠️ 已向服务端发送任务终止指令...", "warn");
     }
@@ -617,7 +866,7 @@ async function stopCurrentTask() {
 // ── 导出功能（支持自动物理下载）──
 function triggerBrowserDownload(url, filename) {
   const a = document.createElement("a");
-  a.href = url;
+  a.href = withTokenQuery(url);
   a.download = filename;
   document.body.appendChild(a);
   a.click();
@@ -630,12 +879,15 @@ async function exportTypstPaper() {
     return;
   }
   try {
-    const res = await fetch(`/api/v1/export/typst/${currentTaskId}`, { method: "POST" });
+    const res = await apiFetch(`/api/v1/export/typst/${currentTaskId}`, { method: "POST" });
     if (!res.ok) throw new Error("导出失败");
     const data = await res.json();
-    if (data.download_url) {
+    if (data.pdf_download_url) {
+      triggerBrowserDownload(data.pdf_download_url, `${currentTaskId}_paper.pdf`);
+      speakHost("已导出 Typst PDF。");
+    } else if (data.download_url) {
       triggerBrowserDownload(data.download_url, `${currentTaskId}_paper.typ`);
-      appendLog(`📥 已自动触发 Typst 论文源文件下载: ${currentTaskId}_paper.typ`, "success");
+      speakHost("本机未安装 Typst CLI，已下载 .typ 源文件。");
     }
   } catch (e) {
     alert(`导出失败: ${e.message}`);
@@ -648,7 +900,7 @@ async function exportSlidesMarp() {
     return;
   }
   try {
-    const res = await fetch(`/api/v1/export/slides/${currentTaskId}`, { method: "POST" });
+    const res = await apiFetch(`/api/v1/export/slides/${currentTaskId}`, { method: "POST" });
     if (!res.ok) throw new Error("导出失败");
     const data = await res.json();
     if (data.download_url) {
@@ -666,7 +918,7 @@ async function exportHtmlReport() {
     return;
   }
   try {
-    const res = await fetch(`/api/v1/export/html/${currentTaskId}`, { method: "POST" });
+    const res = await apiFetch(`/api/v1/export/html/${currentTaskId}`, { method: "POST" });
     if (!res.ok) throw new Error("导出失败");
     const data = await res.json();
     if (data.download_url) {
@@ -710,11 +962,72 @@ function initTasksModal() {
   };
   if (closeBtn) closeBtn.addEventListener("click", closeModal);
   if (refreshBtn) refreshBtn.addEventListener("click", () => loadTaskList());
+  const compareBtn = document.getElementById("compareTasksBtn");
+  if (compareBtn) compareBtn.addEventListener("click", runTaskCompare);
+}
+
+function fillCompareSelects(tasks) {
+  const left = document.getElementById("compareLeft");
+  const right = document.getElementById("compareRight");
+  if (!left || !right) return;
+  const makeOpts = (el, preferSecond) => {
+    const prev = el.value;
+    el.replaceChildren();
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "选择任务";
+    el.appendChild(blank);
+    tasks.forEach((t) => {
+      const opt = document.createElement("option");
+      opt.value = t.task_id;
+      opt.textContent = `${t.topic} (${t.task_id})`;
+      el.appendChild(opt);
+    });
+    if (prev && tasks.some((t) => t.task_id === prev)) el.value = prev;
+    else if (preferSecond && tasks[1]) el.value = tasks[1].task_id;
+    else if (tasks[0]) el.value = tasks[0].task_id;
+  };
+  makeOpts(left, false);
+  makeOpts(right, true);
+}
+
+async function runTaskCompare() {
+  const left = document.getElementById("compareLeft");
+  const right = document.getElementById("compareRight");
+  const out = document.getElementById("compareDiff");
+  if (!left || !right || !out) return;
+  if (!left.value || !right.value || left.value === right.value) {
+    out.hidden = false;
+    out.classList.add("visible");
+    out.textContent = "请选择两个不同的任务。";
+    return;
+  }
+  try {
+    const res = await apiFetch(
+      `/api/v1/research/compare?left=${encodeURIComponent(left.value)}&right=${encodeURIComponent(right.value)}`
+    );
+    if (!res.ok) throw new Error(await readError(res, "对比失败"));
+    const data = await res.json();
+    const header = [
+      data.same_topic ? "同一主题" : "不同主题",
+      `${data.left.topic} [${data.left.task_id}] ${data.left.article_len} 字 / ${data.left.fact_count} 事实`,
+      `${data.right.topic} [${data.right.task_id}] ${data.right.article_len} 字 / ${data.right.fact_count} 事实`,
+      `差异块 ${data.hunks || 0}`,
+      "",
+    ].join("\n");
+    out.hidden = false;
+    out.classList.add("visible");
+    out.textContent = header + (data.diff || "（正文相同或尚无正文）");
+  } catch (e) {
+    out.hidden = false;
+    out.classList.add("visible");
+    out.textContent = e.message;
+  }
 }
 
 async function loadTaskList(silent = false) {
   try {
-    const res = await fetch("/api/v1/tasks?limit=50");
+    const res = await apiFetch("/api/v1/tasks?limit=50");
     if (!res.ok) return;
     const data = await res.json();
     taskListCache = data.tasks || [];
@@ -722,6 +1035,7 @@ async function loadTaskList(silent = false) {
     const badge = document.getElementById("taskBadgeCount");
     if (badge) badge.textContent = taskListCache.length;
 
+    fillCompareSelects(taskListCache);
     if (!silent) {
       renderTaskList(taskListCache);
     }
@@ -760,7 +1074,10 @@ function renderTaskList(tasks) {
           </div>
         </div>
         <div class="task-actions" onclick="event.stopPropagation()">
-          <button class="btn-delete" title="删除任务" onclick="deleteTask('${t.task_id}')">🗑️ 删除</button>
+          ${(!t.is_running && t.display_stage && !["COMPLETED", "DONE"].includes(t.display_stage))
+            ? `<button class="btn btn-sm btn-outline" type="button" onclick="resumeTask('${escapeHtml(t.task_id)}')">继续</button>`
+            : ""}
+          <button class="btn-delete" title="删除任务" onclick="deleteTask('${escapeHtml(t.task_id)}')">删除</button>
         </div>
       </div>
     `;
@@ -784,9 +1101,15 @@ function getStageBadge(stage) {
   }
 }
 
-function escapeHtml(text) {
-  if (!text) return "";
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+function resumeTask(taskId) {
+  const task = taskListCache.find((t) => t.task_id === taskId);
+  resumeTaskId = taskId;
+  currentTaskId = taskId;
+  const topicInput = document.getElementById("topicInput");
+  if (task && topicInput) topicInput.value = task.topic;
+  const modal = document.getElementById("tasksModal");
+  if (modal) modal.classList.remove("active");
+  startResearchTask();
 }
 
 async function selectTask(taskId) {
@@ -802,9 +1125,7 @@ async function selectTask(taskId) {
     if (topicInput) topicInput.value = task.topic;
   }
 
-  const terminal = document.getElementById("logTerminal");
-  if (terminal) terminal.innerHTML = "";
-  appendLog(`🔄 已切换至任务: ${taskId}`, "info");
+  resetDialogue(false);
 
   const startBtn = document.getElementById("startBtn");
   const stopBtn = document.getElementById("stopBtn");
@@ -829,7 +1150,7 @@ async function selectTask(taskId) {
 async function deleteTask(taskId) {
   if (!confirm(`确定要彻底删除任务 [${taskId}] 及其所有成果文件吗？`)) return;
   try {
-    const res = await fetch(`/api/v1/tasks/${taskId}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/v1/tasks/${taskId}`, { method: "DELETE" });
     if (res.ok) {
       if (currentTaskId === taskId) {
         resetToNewTask();
@@ -939,7 +1260,7 @@ function initSettingsModal() {
       resultDiv.textContent = "正在探测端点连通性...";
 
       try {
-        const res = await fetch("/api/v1/config/probe", {
+        const res = await apiFetch("/api/v1/config/probe", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ type: "llm", base_url: baseUrl, api_key: apiKey }),
@@ -974,7 +1295,7 @@ function initSettingsModal() {
       resultDiv.textContent = "正在测试 SearXNG 连通性...";
 
       try {
-        const res = await fetch("/api/v1/config/probe", {
+        const res = await apiFetch("/api/v1/config/probe", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ type: "search", base_url: apiUrl }),
@@ -1017,7 +1338,7 @@ function initSettingsModal() {
       if (maxConcEl) currentSearch.max_concurrent = parseInt(maxConcEl.value) || 15;
 
       try {
-        const res = await fetch("/api/v1/config/save", {
+        const res = await apiFetch("/api/v1/config/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1041,7 +1362,7 @@ function initSettingsModal() {
 
 async function loadSettingsFromServer() {
   try {
-    const res = await fetch("/api/v1/config/providers");
+    const res = await apiFetch("/api/v1/config/providers");
     if (!res.ok) return;
     systemConfig = await res.json();
 
@@ -1078,4 +1399,69 @@ async function loadSettingsFromServer() {
   } catch (e) {
     console.error("Failed to load settings:", e);
   }
+}
+
+function initKnowledgeModal() {
+  const overlay = document.getElementById("knowledgeModal");
+  const openBtn = document.getElementById("openKnowledgeBtn");
+  const closeBtn = document.getElementById("closeKnowledgeBtn");
+  if (!overlay) return;
+  const close = () => overlay.classList.remove("active");
+  if (openBtn) {
+    openBtn.addEventListener("click", async () => {
+      overlay.classList.add("active");
+      const box = document.getElementById("knowledgeContainer");
+      if (box) box.replaceChildren();
+      try {
+        const res = await apiFetch("/api/v1/knowledge");
+        const data = await res.json();
+        const articles = data.articles || [];
+        if (!articles.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty-state";
+          empty.textContent = "知识库还是空的。完成一场研究后，事实会回流到这里。";
+          box.appendChild(empty);
+          return;
+        }
+        articles.forEach((a) => {
+          const card = document.createElement("div");
+          card.className = "task-card";
+          const info = document.createElement("div");
+          info.className = "task-info";
+          const title = document.createElement("div");
+          title.className = "task-title";
+          title.textContent = a.topic || a.task_id;
+          const meta = document.createElement("div");
+          meta.className = "task-meta";
+          meta.textContent = `${a.task_id} · 事实 ${a.citations_count || 0} 条`;
+          info.append(title, meta);
+          card.appendChild(info);
+          box.appendChild(card);
+        });
+      } catch (e) {
+        if (box) box.textContent = "加载失败";
+      }
+    });
+  }
+  if (closeBtn) closeBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+}
+
+function initAboutModal() {
+  const overlay = document.getElementById("aboutModal");
+  const openBtn = document.getElementById("openAboutBtn");
+  const closeBtn = document.getElementById("closeAboutBtn");
+  if (!overlay) return;
+
+  const close = () => overlay.classList.remove("active");
+  if (openBtn) openBtn.addEventListener("click", () => overlay.classList.add("active"));
+  if (closeBtn) closeBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay.classList.contains("active")) close();
+  });
 }

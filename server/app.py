@@ -20,11 +20,25 @@ import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Query
+try:
+    from fastapi import FastAPI, HTTPException, Query, Request
+except ModuleNotFoundError:
+    sys.stderr.write(
+        "未找到 FastAPI。当前解释器没有安装工程依赖。\n"
+        "请在工程根目录执行：\n"
+        "  python3 -m venv .venv\n"
+        "  source .venv/bin/activate\n"
+        "  pip install -r requirements.txt\n"
+        "  python -m server.app\n"
+        "或直接：\n"
+        "  .venv/bin/python -m server.app\n"
+    )
+    raise SystemExit(1) from None
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # 注入项目根路径
 ROOT_DIR = Path(__file__).parent.parent
@@ -43,24 +57,57 @@ from knowledge_storm.async_core import (
     probe_search_endpoint,
 )
 from knowledge_storm.async_core.typst_compiler import TypstCompiler
+from knowledge_storm.async_core.security import (
+    SecurityError,
+    expected_api_token,
+    safe_local_docs_dir,
+    safe_task_dir,
+    validate_task_id,
+)
+from knowledge_storm.async_core.seminar import (
+    append_seminar,
+    load_seminar_log,
+    seminar_path,
+    utterances_for_event,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="STORM Modern Deep Research API",
-    version="2.1.0",
-    description="Production-grade asynchronous knowledge curation and paper generation engine with ConfigHub.",
+    title="溯知 · SuZhi Deep Research API",
+    version="1.0.0",
+    description="溯知深度知识策展与学术长文生成系统（引擎代号 STORM）。出品：鹿溪联合创新实验室。",
 )
 
-# 允许跨域
+_CORS_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "SUZHI_CORS_ORIGINS",
+        "http://127.0.0.1:8000,http://localhost:8000",
+    ).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-SuZhi-Token"],
 )
+
+
+class _TokenGate(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        token = expected_api_token()
+        if token and request.url.path.startswith("/api/"):
+            got = request.headers.get("X-SuZhi-Token") or request.query_params.get("token") or ""
+            if got != token:
+                return JSONResponse({"detail": "未授权"}, status_code=401)
+        return await call_next(request)
+
+
+app.add_middleware(_TokenGate)
 
 # 静态资源与前端目录
 STATIC_DIR = ROOT_DIR / "frontend" / "web"
@@ -122,12 +169,45 @@ def get_runtime_components(local_docs_dir: Optional[str] = None):
         enable_cache=active_search_info.enable_cache,
     )
 
-    if local_docs_dir and Path(local_docs_dir).exists():
+    if local_docs_dir:
         retriever = HybridRetriever(web_retriever=searx, local_docs_dir=local_docs_dir)
     else:
         retriever = searx
 
     return llm, retriever
+
+
+def _checked_task_id(task_id: str) -> str:
+    try:
+        return validate_task_id(task_id)
+    except SecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _checked_task_dir(task_id: str) -> Path:
+    try:
+        return safe_task_dir(ROOT_DIR, task_id)
+    except SecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _mark_checkpoint_stage(task_id: str, stage: str) -> None:
+    cp = state_manager.load_checkpoint(task_id)
+    if not cp:
+        return
+    cp.stage = stage
+    state_manager.save_checkpoint(cp)
+
+
+def _seminar_file(task_id: str) -> Path:
+    return seminar_path(ROOT_DIR / "results_async", task_id)
+
+
+def _emit_seminar(task_id: str, stage: str, data: Any) -> List[dict]:
+    payload = data if isinstance(data, dict) else {}
+    items = utterances_for_event(stage, payload)
+    append_seminar(_seminar_file(task_id), items)
+    return [u.model_dump() for u in items]
 
 
 MAX_CONCURRENT_RESEARCH = 3
@@ -172,12 +252,14 @@ async def _run_research_job(task_id: str, req: ResearchStartRequest):
 
     def _event_cb(stage: str, data: Any):
         progress = STAGE_PROGRESS_MAP.get(stage, None)
+        seminar = _emit_seminar(task_id, stage, data)
         payload = {
             "task_id": task_id,
             "stage": stage,
             "data": data,
             "tokens_used": llm.total_tokens_used,
             "progress_pct": progress,
+            "seminar": seminar,
         }
         try:
             queue.put_nowait(payload)
@@ -185,24 +267,55 @@ async def _run_research_job(task_id: str, req: ResearchStartRequest):
             pass
 
     try:
+        open_data = {"topic": req.topic, "task_id": task_id, "resumed": bool(req.resume_task_id)}
+        try:
+            queue.put_nowait({
+                "task_id": task_id,
+                "stage": "SESSION_OPEN",
+                "data": open_data,
+                "seminar": _emit_seminar(task_id, "SESSION_OPEN", open_data),
+            })
+        except Exception:
+            pass
         article = await pipeline.run(
             topic=req.topic,
             task_id=task_id,
             progress_callback=_event_cb,
         )
+        done_data = {"article_len": len(article.content)}
         queue.put_nowait({
             "task_id": task_id,
             "stage": "DONE",
             "progress_pct": 100,
             "tokens_used": llm.total_tokens_used,
-            "data": {"article_len": len(article.content)},
+            "data": done_data,
+            "seminar": _emit_seminar(task_id, "DONE", done_data),
         })
     except asyncio.CancelledError:
         logger.info(f"Task {task_id} cancelled by user.")
-        queue.put_nowait({"task_id": task_id, "stage": "STOPPED", "data": {"message": "任务已手动终止"}})
+        _mark_checkpoint_stage(task_id, "STOPPED")
+        stop_data = {"message": "任务已手动终止"}
+        try:
+            queue.put_nowait({
+                "task_id": task_id,
+                "stage": "STOPPED",
+                "data": stop_data,
+                "seminar": _emit_seminar(task_id, "STOPPED", stop_data),
+            })
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"Task {task_id} failed: {e}", exc_info=True)
-        queue.put_nowait({"task_id": task_id, "stage": "ERROR", "data": {"error": str(e)}})
+        err_data = {"error": str(e)}
+        try:
+            queue.put_nowait({
+                "task_id": task_id,
+                "stage": "ERROR",
+                "data": err_data,
+                "seminar": _emit_seminar(task_id, "ERROR", err_data),
+            })
+        except Exception:
+            pass
     finally:
         RUNNING_TASKS.pop(task_id, None)
         await llm.close()
@@ -218,7 +331,7 @@ async def serve_index():
             content=index_file.read_text(encoding="utf-8"),
             headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
         )
-    return "<h1>STORM Web UI Initializing...</h1>"
+    return "<h1>溯知 · SuZhi Web UI Initializing...</h1>"
 
 
 # ── 任务管理 REST API ───────────────────────────────────────────────────
@@ -252,8 +365,23 @@ async def start_research(req: ResearchStartRequest):
             detail=f"当前已有 {len(active_running)} 个深度研究任务正在并发执行，已达到服务器安全上限 ({MAX_CONCURRENT_RESEARCH})。请等待其完成或手动终止后再发起。",
         )
 
-    task_id = req.resume_task_id or f"storm_{uuid.uuid4().hex[:8]}"
-    TASK_EVENT_QUEUES[task_id] = asyncio.Queue(maxsize=500)
+    if req.resume_task_id:
+        task_id = _checked_task_id(req.resume_task_id)
+    else:
+        task_id = f"storm_{uuid.uuid4().hex[:8]}"
+
+    running = RUNNING_TASKS.get(task_id)
+    if running and not running.done():
+        raise HTTPException(status_code=409, detail="该任务已在运行中")
+
+    try:
+        local_dir = safe_local_docs_dir(ROOT_DIR, req.local_docs_dir)
+    except SecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    req.local_docs_dir = str(local_dir) if local_dir else None
+
+    if task_id not in TASK_EVENT_QUEUES:
+        TASK_EVENT_QUEUES[task_id] = asyncio.Queue(maxsize=2000)
 
     t = asyncio.create_task(_run_research_job(task_id, req))
     RUNNING_TASKS[task_id] = t
@@ -263,16 +391,17 @@ async def start_research(req: ResearchStartRequest):
         "task_id": task_id,
         "topic": req.topic,
         "deep_research": req.deep_research,
+        "resumed": bool(req.resume_task_id),
     }
 
 
 @app.post("/api/v1/research/stop/{task_id}")
 async def stop_research(task_id: str):
     """手动中断指定的后台研究任务。"""
+    task_id = _checked_task_id(task_id)
     t = RUNNING_TASKS.get(task_id)
     if t and not t.done():
         t.cancel()
-        RUNNING_TASKS.pop(task_id, None)
         return {"status": "stopped", "task_id": task_id}
     return {"status": "not_running", "task_id": task_id}
 
@@ -280,6 +409,7 @@ async def stop_research(task_id: str):
 @app.delete("/api/v1/tasks/{task_id}")
 async def delete_task(task_id: str):
     """彻底物理清理指定任务的所有持久化快照、知识库索引、内存队列与磁盘成果。"""
+    task_id = _checked_task_id(task_id)
     t = RUNNING_TASKS.get(task_id)
     if t and not t.done():
         t.cancel()
@@ -294,9 +424,9 @@ async def delete_task(task_id: str):
     kb_hub.delete_task_records(task_id)
 
     # 物理清理磁盘结果目录
-    task_dir = ROOT_DIR / "results_async" / task_id
-    if task_dir.exists():
-        import shutil
+    import shutil
+    task_dir = _checked_task_dir(task_id)
+    if task_dir.exists() and task_dir.is_dir():
         shutil.rmtree(task_dir, ignore_errors=True)
 
     return {
@@ -311,6 +441,7 @@ async def delete_task(task_id: str):
 @app.get("/api/v1/research/stream/{task_id}")
 async def stream_research_events(task_id: str):
     """建立或重连 SSE 实时事件流（支持已有状态快照重放）。"""
+    task_id = _checked_task_id(task_id)
     queue = TASK_EVENT_QUEUES.get(task_id)
     cp = state_manager.load_checkpoint(task_id)
 
@@ -328,6 +459,7 @@ async def stream_research_events(task_id: str):
                     "has_outline": bool(cp.outline),
                     "has_draft": bool(cp.article_draft),
                     "updated_at": cp.updated_at,
+                    "seminar_log": load_seminar_log(_seminar_file(task_id)),
                 }
             }
             yield f"data: {json.dumps(snapshot_event, ensure_ascii=False)}\n\n"
@@ -367,11 +499,12 @@ async def stream_research_events(task_id: str):
 
 @app.get("/api/v1/research/article/{task_id}")
 async def get_article(task_id: str):
+    task_id = _checked_task_id(task_id)
     cp = state_manager.load_checkpoint(task_id)
     if not cp:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task_dir = ROOT_DIR / "results_async" / task_id
+    task_dir = _checked_task_dir(task_id)
     article_path = task_dir / "article.md"
     content = article_path.read_text(encoding="utf-8") if article_path.exists() else (cp.article_draft.content if cp.article_draft else "")
 
@@ -385,22 +518,72 @@ async def get_article(task_id: str):
     }
 
 
+@app.get("/api/v1/research/compare")
+async def compare_tasks(left: str = Query(...), right: str = Query(...)):
+    """对比两场研究的正文差异（同主题复跑对照）。"""
+    import difflib
+
+    left_id = _checked_task_id(left)
+    right_id = _checked_task_id(right)
+    a = state_manager.load_checkpoint(left_id)
+    b = state_manager.load_checkpoint(right_id)
+    if not a or not b:
+        raise HTTPException(status_code=404, detail="对比任务不存在")
+
+    def _meta(cp):
+        article = cp.article_draft.content if cp.article_draft else ""
+        return {
+            "task_id": cp.task_id,
+            "topic": cp.topic,
+            "stage": cp.stage,
+            "fact_count": len(cp.fact_pool.facts) if cp.fact_pool else 0,
+            "article_len": len(article),
+        }
+
+    left_lines = ((a.article_draft.content if a.article_draft else "") or "").splitlines()
+    right_lines = ((b.article_draft.content if b.article_draft else "") or "").splitlines()
+    diff = list(
+        difflib.unified_diff(
+            left_lines,
+            right_lines,
+            fromfile=left_id,
+            tofile=right_id,
+            lineterm="",
+            n=2,
+        )
+    )
+    return {
+        "left": _meta(a),
+        "right": _meta(b),
+        "same_topic": a.topic.strip() == b.topic.strip(),
+        "diff": "\n".join(diff[:500]),
+        "diff_truncated": len(diff) > 500,
+        "hunks": len([ln for ln in diff if ln.startswith("@@")]),
+    }
+
+
 @app.post("/api/v1/export/typst/{task_id}")
 async def export_typst(task_id: str):
+    task_id = _checked_task_id(task_id)
     cp = state_manager.load_checkpoint(task_id)
     if not cp or not cp.article_draft:
         raise HTTPException(status_code=404, detail="Article draft not available for this task")
 
     compiler = TypstCompiler()
     typst_code = compiler.generate_typst_source(cp.article_draft)
-    out_dir = ROOT_DIR / "results_async" / task_id
+    out_dir = _checked_task_dir(task_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "paper.typ"
     out_file.write_text(typst_code, encoding="utf-8")
+    pdf_path = out_dir / "paper.pdf"
+    pdf_ok = compiler.compile_pdf(cp.article_draft, str(pdf_path))
 
     return {
         "status": "success",
         "file_path": str(out_file.absolute()),
         "download_url": f"/api/v1/download/{task_id}/paper.typ",
+        "pdf_ready": bool(pdf_ok),
+        "pdf_download_url": f"/api/v1/download/{task_id}/paper.pdf" if pdf_ok else None,
         "typst_source": typst_code,
     }
 
@@ -408,6 +591,7 @@ async def export_typst(task_id: str):
 @app.post("/api/v1/export/slides/{task_id}")
 async def export_slides(task_id: str):
     """导出 Marp 学术演示幻灯片。"""
+    task_id = _checked_task_id(task_id)
     cp = state_manager.load_checkpoint(task_id)
     if not cp or not cp.article_draft:
         raise HTTPException(status_code=404, detail="Article draft not available for this task")
@@ -415,7 +599,8 @@ async def export_slides(task_id: str):
     from knowledge_storm.async_core.exporter import MultiFormatExporter
     exporter = MultiFormatExporter()
     slides_md = exporter.generate_marp_slides_markdown(cp.article_draft)
-    out_dir = ROOT_DIR / "results_async" / task_id
+    out_dir = _checked_task_dir(task_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "slides.marp.md"
     out_file.write_text(slides_md, encoding="utf-8")
 
@@ -430,6 +615,7 @@ async def export_slides(task_id: str):
 @app.post("/api/v1/export/html/{task_id}")
 async def export_standalone_html(task_id: str):
     """导出独立印刷级 HTML 研报。"""
+    task_id = _checked_task_id(task_id)
     cp = state_manager.load_checkpoint(task_id)
     if not cp or not cp.article_draft:
         raise HTTPException(status_code=404, detail="Article draft not available for this task")
@@ -437,7 +623,8 @@ async def export_standalone_html(task_id: str):
     from knowledge_storm.async_core.exporter import MultiFormatExporter
     exporter = MultiFormatExporter()
     html_content = exporter.generate_standalone_html_report(cp.article_draft)
-    out_dir = ROOT_DIR / "results_async" / task_id
+    out_dir = _checked_task_dir(task_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "report_standalone.html"
     out_file.write_text(html_content, encoding="utf-8")
 
@@ -460,12 +647,14 @@ async def download_task_file(task_id: str, filename: str):
         "outline.md",
         "fact_pool.json",
         "citations.json",
+        "seminar.jsonl",
+        "paper.pdf",
     ]
     if filename not in allowed_files:
         raise HTTPException(status_code=400, detail="Invalid filename requested")
 
-    file_path = ROOT_DIR / "results_async" / task_id / filename
-    if not file_path.exists():
+    file_path = _checked_task_dir(task_id) / filename
+    if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Requested file not found on disk")
 
     return FileResponse(
@@ -476,6 +665,15 @@ async def download_task_file(task_id: str, filename: str):
 
 
 # ── 配置中心 API ───────────────────────────────────────────────────────
+
+@app.get("/api/v1/knowledge")
+async def list_knowledge():
+    """只读列出本地知识库已沉淀课题。"""
+    from knowledge_storm.async_core.local_knowledge_hub import LocalKnowledgeHub
+    hub = LocalKnowledgeHub(db_path=ROOT_DIR / "results_async" / "local_knowledge.db")
+    articles = hub.list_articles()
+    return {"articles": articles, "total": len(articles)}
+
 
 @app.get("/api/v1/config/providers")
 async def get_config_providers():
@@ -495,9 +693,17 @@ async def probe_endpoint(req: ProbeRequest):
 
 @app.post("/api/v1/config/save")
 async def save_config(req: SaveConfigRequest):
-    """保存并热重载系统配置。"""
+    """保存并热重载系统配置。空密钥表示保持原值。"""
     try:
-        new_cfg = StormSystemConfig(**req.model_dump())
+        payload = req.model_dump()
+        existing = config_hub.system_config
+        for pid, info in payload.get("llm_providers", {}).items():
+            if not info.get("api_key") and pid in existing.llm_providers:
+                info["api_key"] = existing.llm_providers[pid].api_key
+        for pid, info in payload.get("search_providers", {}).items():
+            if not info.get("api_key") and pid in existing.search_providers:
+                info["api_key"] = existing.search_providers[pid].api_key
+        new_cfg = StormSystemConfig(**payload)
         config_hub.save_config(new_cfg)
         return {"status": "saved", "active_llm": new_cfg.active_llm_provider, "active_search": new_cfg.active_search_provider}
     except Exception as e:
@@ -522,9 +728,10 @@ async def sync_spam_blocklist():
     return {"status": "success", "data": res}
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8000):
+def run_server(host: Optional[str] = None, port: int = 8000):
     import uvicorn
-    uvicorn.run("server.app:app", host=host, port=port, reload=False, log_level="info")
+    bind_host = host or os.environ.get("SUZHI_BIND", "127.0.0.1")
+    uvicorn.run("server.app:app", host=bind_host, port=port, reload=False, log_level="info")
 
 
 if __name__ == "__main__":

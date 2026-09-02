@@ -26,6 +26,7 @@ def test_config_hub_load_and_mask():
     assert "deepseek" in masked["llm_providers"]
     assert "searxng" in masked["search_providers"]
     assert "api_key_masked" in masked["llm_providers"]["deepseek"]
+    assert "api_key" not in masked["llm_providers"]["deepseek"]
 
     # 测试保存
     cfg = hub.system_config

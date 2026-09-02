@@ -104,6 +104,16 @@ class DynamicExplorationTree:
             snippets: List[SearchSnippet] = await retriever_func(current_node.query)
             current_node.snippets = snippets
 
+            if not snippets:
+                current_node.information_gain_score = 0.0
+                current_node.status = "SATURATED"
+                if progress_cb:
+                    progress_cb(
+                        "DECISION_SATURATE",
+                        {"reason": "本轮没有可用信源，不下钻。", "gain": 0.0, "perspective": current_node.perspective},
+                    )
+                continue
+
             if progress_cb and snippets:
                 sample_sources = [{"title": s.title or "Web Source", "url": s.url} for s in snippets[:2]]
                 progress_cb("SEARCH_HITS", {"query": current_node.query, "count": len(snippets), "samples": sample_sources})
@@ -146,7 +156,7 @@ Output format strictly:
 - Fact 2"""
 
             res = await self.llm.generate(prompt=extract_prompt)
-            gain_score, extracted_facts = self._parse_gain_and_facts(res, is_chinese=is_chinese, fallback_topic=topic)
+            gain_score, extracted_facts = self._parse_gain_and_facts(res, is_chinese=is_chinese)
             
             # 主题相关性二次防线：过滤完全不包含主题核心关键词的噪音事实
             valid_facts = []
@@ -185,19 +195,16 @@ Output format strictly:
                             best_overlap = overlap
                             best_snip = snip
                     if not best_snip:
-                        best_snip = snippets[0]
-
-                src_url = best_snip.url if best_snip else "https://storm-synthesis.org"
-                src_title = best_snip.title if best_snip else f"{current_node.perspective} 综合研判"
-                src_qual = best_snip.source_quality if best_snip else 1.0
+                        continue
 
                 fact_pool.add_fact(
                     claim=fact,
-                    url=src_url,
-                    title=src_title,
+                    url=best_snip.url,
+                    title=best_snip.title,
                     perspective=current_node.perspective,
-                    source_quality=src_qual,
+                    source_quality=best_snip.source_quality,
                     confidence=1.0,
+                    engine=getattr(best_snip, "engine", "") or "",
                 )
 
             # 记录对话轮次
@@ -365,13 +372,14 @@ Format strictly as:
         return sub_queries
 
     def _parse_gain_and_facts(self, text: str, is_chinese: bool = True, fallback_topic: str = "") -> tuple[float, List[str]]:
-        """鲁棒的事实与增益解析器（支持多种大模型输出风格）。"""
+        """解析增益与事实。解析失败增益为 0，不编造套话入池。"""
         import re
-        gain = 0.8
+        gain = 0.0
         facts = []
-        cleaned_text = re.sub(r'<think>[\s\S]*?<\/think>', '', text).strip()
+        cleaned_text = re.sub(r'<think>[\s\S]*?<\/think>', '', text or "").strip()
         lines = cleaned_text.split("\n")
         in_facts = False
+        parsed_gain = False
 
         for line in lines:
             line_s = line.strip()
@@ -380,34 +388,26 @@ Format strictly as:
                     gain_match = re.search(r'GAIN\]?:\s*([0-9.]+)', line_s)
                     if gain_match:
                         gain = float(gain_match.group(1))
+                        parsed_gain = True
                 except Exception:
-                    gain = 0.8
-            elif "[FACTS]" in line_s or "FACTS:" in line_s or "事实" in line_s:
+                    gain = 0.0
+            elif "[FACTS]" in line_s or line_s.upper().startswith("FACTS:"):
                 in_facts = True
             elif in_facts and (line_s.startswith("-") or line_s.startswith("•") or line_s.startswith("*") or (line_s and line_s[0].isdigit())):
                 clean_fact = line_s.lstrip("0123456789.-•*、[] ").strip()
-                if len(clean_fact) >= 6:
+                if len(clean_fact) >= 6 and "无有效相关事实" not in clean_fact:
                     facts.append(clean_fact)
 
-        # 若未按标签格式输出，兜底提取所有要点行
         if not facts:
             for l in lines:
                 l_s = l.strip()
-                if (l_s.startswith("-") or l_s.startswith("•") or l_s.startswith("*") or (l_s and l_s[0].isdigit())) and len(l_s) >= 8:
+                if (l_s.startswith("-") or l_s.startswith("•") or l_s.startswith("*")) and len(l_s) >= 8:
                     clean_f = l_s.lstrip("0123456789.-•*、[] ").strip()
                     if len(clean_f) >= 8 and not any(tag in clean_f.upper() for tag in ["GAIN", "FACTS", "TOPIC"]):
                         facts.append(clean_f)
 
-        # 终极兜底：若仍为空，提取非空段落
         if not facts:
-            paragraphs = [p.strip() for p in cleaned_text.split("\n\n") if len(p.strip()) > 15 and not p.strip().startswith("[")]
-            facts = paragraphs[:4]
-
-        # 保证至少返回有效事实
-        if not facts and fallback_topic:
-            if is_chinese:
-                facts = [f"{fallback_topic} 是当前行业快速演进的重点方向，具有显著的结构性创新特征。"]
-            else:
-                facts = [f"{fallback_topic} represents a significant emerging area with structural innovations."]
-
-        return max(0.1, min(1.0, gain)), facts
+            return 0.0, []
+        if not parsed_gain:
+            gain = 0.0
+        return max(0.0, min(1.0, gain)), facts

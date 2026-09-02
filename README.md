@@ -1,15 +1,28 @@
-# STORM: 现代异步深度研究与学术长文生成引擎 (Deep Research Agent)
+# 溯知 · SuZhi
+
+**溯流求源，知汇成章。**
+
+溯知（英文 **SuZhi**，引擎代号 **STORM**）是鹿溪联合创新实验室出品的深度知识策展与学术长文生成系统：多视角检索、事实图谱、递归探索，把散落信源写成可引用的长文，并导出论文、幻灯片与离线研报。
 
 <div align="center">
 
-![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
+![License](https://img.shields.io/badge/License-MIT%20(upstream)-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-green.svg)
-![Architecture](https://img.shields.io/badge/Architecture-Async%20Event--Driven-purple.svg)
-![Status](https://img.shields.io/badge/Production-Ready-success.svg)
+![Brand](https://img.shields.io/badge/LUXI%20Lab-溯知-0D5E42.svg)
 
-**STORM (Synthesis of Topic Outlines & Research Material)** 是一个生产级、全配置驱动、纯异步轻量化、支持深度递归探索（Deep Research）的自动化知识策展与学术长文出版引擎。
+出品：鹿溪联合创新实验室（LUXI Joint Innovation Lab） · 矩阵：工坊·一法
 
 </div>
+
+> 自研主路径：`knowledge_storm/async_core/` + `server/` + `frontend/web/` + `cli/`。  
+> 上游 Stanford STORM 位于 `knowledge_storm/storm_wiki/` 等目录，MIT 许可，**不是**本产品的运行入口。  
+> 软著与使用文档：[`docs/`](./docs/README.md)
+
+---
+
+## STORM 引擎能力（自研异步内核）
+
+**STORM (Synthesis of Topic Outlines & Research Material)** 在本仓库中指溯知的技术引擎：生产级、全配置驱动、纯异步轻量化、支持深度递归探索的自动化知识策展与学术长文出版管线。
 
 ---
 
@@ -76,16 +89,24 @@ flowchart TD
 
 ## 🛠️ 快速安装 (Installation)
 
-无需 GPU，无需编译庞大 C++ 依赖：
+无需 GPU。请使用虚拟环境，系统自带的 `python3` **不会**自动带上 FastAPI。
 
 ```bash
-# 1. 克隆代码仓库
 git clone https://github.com/itrilogy/llm_storm.git
 cd llm_storm
 
-# 2. 安装纯轻量异步依赖 (< 50MB)
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+之后一律用该环境中的解释器：
+
+```bash
+python -m server.app               # 或 .venv/bin/python -m server.app
+```
+
+浏览器打开 **http://127.0.0.1:8000**（默认只绑本机）。完整操作见 [`docs/03-用户使用手册.md`](./docs/03-用户使用手册.md)。软著与设计文档见 [`docs/`](./docs/README.md)。
 
 ---
 
@@ -125,13 +146,15 @@ searxng.engines_general = "google,bing,duckduckgo"
 
 ### 模式 1：现代响应式 Web 控制台 (首选推荐)
 
-启动高性能 FastAPI + SSE 流式服务：
+启动高性能 FastAPI + SSE 流式服务（先激活 `.venv`）：
 
 ```bash
-python3 -m server.app
+source .venv/bin/activate
+python -m server.app
 ```
-* 浏览器访问：`http://localhost:8000`
-* **功能亮点**：5 阶段指示轴毫秒级更新、实时思考终端（Thinking Trace）、Markdown 渲染、一键导出 Typst / Marp 幻灯片 / 离线研报。
+
+* 浏览器访问：`http://127.0.0.1:8000`
+* **功能亮点**：五段演进轴、正文左侧「研讨现场」角色对谈（主持人 / 视角 / 书记员 / 审稿人）、任务断点续跑与复跑对比、知识库冷启动、一键导出 Typst（有 CLI 则 PDF）/ Marp / 离线研报（无 CDN）。
 
 ---
 
@@ -139,23 +162,23 @@ python3 -m server.app
 
 ```bash
 # 1. 基础快速研究
-python3 -m cli.async_runner --topic "Vibe Coding in Software Engineering"
+python -m cli.async_runner --topic "Vibe Coding in Software Engineering"
 
 # 2. 启用深度递归探索树 (Tree-of-Thoughts)
-python3 -m cli.async_runner \
+python -m cli.async_runner \
   --topic "Vibe Coding as a Paradigm for AI-Assisted Software Development" \
   --deep-research \
   --max-depth 2 \
   --perspectives 4
 
 # 3. 挂载本地知识库/语料库进行 RRF 混合检索
-python3 -m cli.async_runner \
+python -m cli.async_runner \
   --topic "企业内部微服务治理演进" \
   --local-docs-dir ./raw_sources \
   --deep-research
 
 # 4. 中断恢复与断点续跑 (Resuming Tasks)
-python3 -m cli.async_runner \
+python -m cli.async_runner \
   --topic "企业内部微服务治理演进" \
   --resume storm_a1b2c3d4
 ```
@@ -219,26 +242,33 @@ npx @marp-team/marp-cli results_async/<task_id>/slides.marp.md -o presentation.p
 results_async/storm_a1b2c3d4/
 ├── article.md                # 完整正文 Markdown（含精确 [i] 引用与 Mermaid 图表）
 ├── outline.md                # 结构化多级学术大纲
-├── citations.json            # 参考文献元数据（URL、标题、摘录）
+├── citations.json            # 参考文献元数据（URL、标题、摘录、信源档位）
 ├── fact_pool.json            # 全量原子事实池
+├── seminar.jsonl             # 研讨现场对白（刷新可回放）
 ├── paper.typ                 # IEEE/ACM 双栏学术论文 Typst 源码
+├── paper.pdf                 # 若本机已安装 Typst CLI
 ├── slides.marp.md            # Marp 演讲幻灯片演示文稿
-└── report_standalone.html    # 独立自包含印刷级 HTML 研报
+└── report_standalone.html    # 独立自包含印刷级 HTML 研报（无 CDN）
 ```
 
 ---
 
 ## 🧪 自动化测试验证 (Testing Suite)
 
-运行 6 大全量回归测试套件：
+激活 `.venv` 后运行：
 
 ```bash
-python3 tests/test_async_core.py            # 异步契约与 SQLite WAL 断点恢复
-python3 tests/test_deep_research.py          # 动态探索树与事实图谱冲突裁决
-python3 tests/test_server_and_typst.py       # FastAPI 异步服务与 Typst 编译器
-python3 tests/test_config_hub_and_probe.py   # ConfigHub 四层继承与 SQLite 检索缓存
-python3 tests/test_advanced_features.py      # Mermaid/SVG 图表、Marp Slides 与本地知识库
-python3 tests/test_full_pipeline_e2e.py      # 6 大阶段端到端全流程模拟闭环
+python tests/test_async_core.py
+python tests/test_security_guards.py
+python tests/test_seminar_and_export.py
+python tests/test_http_surface.py          # 空主题 / 脱敏 / 品牌页 / 探测拦截
+python tests/test_server_and_typst.py
+python tests/test_config_hub_and_probe.py
+python tests/test_advanced_features.py
+python tests/test_full_pipeline_e2e.py
+# 可选浏览器冒烟：
+# pip install playwright && playwright install chromium
+# PLAYWRIGHT=1 python tests/test_ui_playwright.py
 ```
 
 ---

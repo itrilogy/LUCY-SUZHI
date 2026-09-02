@@ -3,34 +3,40 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>STORM 深度知识策展与长文研究引擎</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=2.3.0">
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <title>溯知 · SuZhi — 深度知识策展与学术长文生成</title>
+  <meta name="description" content="溯知 (SuZhi / STORM) — 多视角检索、事实图谱与学术长文出版引擎 · 鹿溪联合创新实验室">
+  <meta name="theme-color" content="#0D5E42">
+  <link rel="icon" type="image/svg+xml" href="/static/brand/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/brand/suzhi-mark.svg">
+  <link rel="stylesheet" href="/static/style.css?v=3.4.0">
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/mermaid.min.js"></script>
 </head>
 <body>
   <div class="app-container">
-    <!-- 顶部导航栏 -->
     <header class="app-header">
       <div class="brand">
-        <div class="logo-icon">⚡</div>
+        <img class="logo-mark" src="/static/brand/suzhi-mark.svg" width="36" height="36" alt="溯知">
         <div class="brand-text">
-          <h1>STORM</h1>
-          <span class="badge">Deep Research v2.1</span>
+          <h1>溯知 <span class="brand-en">SuZhi</span></h1>
+          <p class="brand-slogan">溯流求源，知汇成章</p>
         </div>
       </div>
       <div class="header-actions">
-        <button class="btn btn-sm btn-outline" id="openTasksBtn">
-          <span class="btn-icon">📁</span> 任务列表 (<span id="taskBadgeCount">0</span>)
+        <button class="btn btn-sm btn-outline" id="openTasksBtn" type="button">
+          任务列表 (<span id="taskBadgeCount">0</span>)
         </button>
-        <button class="btn btn-sm btn-primary" id="newTaskBtn">
-          <span class="btn-icon">➕</span> 新建研究
+        <button class="btn btn-sm btn-outline" id="openKnowledgeBtn" type="button">
+          知识库
         </button>
-        <button class="btn btn-sm btn-outline" id="openSettingsBtn">
-          <span class="btn-icon">⚙️</span> 配置中心
+        <button class="btn btn-sm btn-primary" id="newTaskBtn" type="button">
+          新建研究
+        </button>
+        <button class="btn btn-sm btn-outline" id="openSettingsBtn" type="button">
+          配置中心
+        </button>
+        <button class="btn btn-sm btn-outline" id="openAboutBtn" type="button">
+          关于
         </button>
         <div class="header-status" id="headerStatus">
           <span class="status-indicator"></span>
@@ -39,15 +45,13 @@
       </div>
     </header>
 
-    <!-- 主控区域 -->
     <main class="main-layout">
-      <!-- 左侧：输入与控制面板 -->
       <aside class="control-panel">
         <div class="panel-card">
-          <h2>🎯 研究主题设定</h2>
+          <h2>研究主题设定</h2>
           <div class="input-group">
             <label for="topicInput">研究课题 / 论文主题</label>
-            <textarea id="topicInput" rows="3" placeholder="例如: Vibe Coding as a Paradigm for AI-Assisted Software Development"></textarea>
+            <textarea id="topicInput" rows="3" placeholder="例如：Vibe Coding 作为 AI 辅助软件开发范式"></textarea>
           </div>
 
           <div class="settings-grid">
@@ -61,9 +65,9 @@
             <div class="setting-item">
               <label for="depthSelect">探索最大深度</label>
               <select id="depthSelect">
-                <option value="1">1 层 (快速研报)</option>
-                <option value="2" selected>2 层 (标准学术)</option>
-                <option value="3">3 层 (深度挖掘)</option>
+                <option value="1">1 层（快速研报）</option>
+                <option value="2" selected>2 层（标准学术）</option>
+                <option value="3">3 层（深度挖掘）</option>
               </select>
             </div>
             <div class="setting-item">
@@ -73,30 +77,29 @@
           </div>
 
           <div class="input-group">
-            <label for="localDocsInput">本地语料库挂载 (可选路径)</label>
-            <input type="text" id="localDocsInput" placeholder="例如: ./raw_sources">
+            <label for="localDocsInput">本地语料库（工程目录内相对路径）</label>
+            <input type="text" id="localDocsInput" placeholder="例如: raw_sources">
           </div>
 
           <div class="action-buttons">
-            <button class="btn btn-primary" id="startBtn">
-              <span class="btn-icon">🚀</span> 启动深度研究
+            <button class="btn btn-primary" id="startBtn" type="button">
+              启动深度研究
             </button>
-            <button class="btn btn-secondary" id="stopBtn" disabled>
-              <span class="btn-icon">⏹</span> 中断任务
+            <button class="btn btn-secondary" id="stopBtn" type="button" disabled>
+              中断任务
             </button>
           </div>
         </div>
 
-        <!-- 阶段状态指示轴 -->
         <div class="panel-card">
-          <div class="panel-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h2 style="margin: 0;">📊 全流程演进轴</h2>
-            <span class="token-badge" style="background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.3); padding: 3px 8px; border-radius: 6px; font-size: 12px;">🪙 <b id="tokenCountDisplay">0</b> Tokens</span>
+          <div class="panel-header-row">
+            <h2>全流程演进轴</h2>
+            <span class="token-badge">Tokens <b id="tokenCountDisplay">0</b></span>
           </div>
-          <div class="overall-progress-wrapper" style="background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 8px;">
-            <div class="overall-progress-bar" id="overallProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #6366f1, #38bdf8); transition: width 0.4s ease;"></div>
+          <div class="overall-progress-wrapper">
+            <div class="overall-progress-bar" id="overallProgressBar"></div>
           </div>
-          <div class="progress-meta-row" style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; margin-bottom: 16px;">
+          <div class="progress-meta-row">
             <span id="progressPctText">进度: 0%</span>
             <span id="estimatedRemainingText">待启动</span>
           </div>
@@ -104,180 +107,220 @@
             <div class="timeline-step" data-step="1">
               <div class="step-marker">1</div>
               <div class="step-content">
-                <div class="step-title">视角发现 (Discovery)</div>
+                <div class="step-title">视角发现</div>
                 <div class="step-desc" id="step1Desc">待开始</div>
               </div>
             </div>
             <div class="timeline-step" data-step="2">
               <div class="step-marker">2</div>
               <div class="step-content">
-                <div class="step-title">动态知识策展 (Curation)</div>
+                <div class="step-title">知识策展</div>
                 <div class="step-desc" id="step2Desc">待开始</div>
               </div>
             </div>
             <div class="timeline-step" data-step="3">
               <div class="step-marker">3</div>
               <div class="step-content">
-                <div class="step-title">大纲拓扑编排 (Outline)</div>
+                <div class="step-title">大纲编排</div>
                 <div class="step-desc" id="step3Desc">待开始</div>
               </div>
             </div>
             <div class="timeline-step" data-step="4">
               <div class="step-marker">4</div>
               <div class="step-content">
-                <div class="step-title">正文并行起草 (Writing)</div>
+                <div class="step-title">正文起草</div>
                 <div class="step-desc" id="step4Desc">待开始</div>
               </div>
             </div>
             <div class="timeline-step" data-step="5">
               <div class="step-marker">5</div>
               <div class="step-content">
-                <div class="step-title">冲突裁决与润色 (Polish)</div>
+                <div class="step-title">评审润色</div>
                 <div class="step-desc" id="step5Desc">待开始</div>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 实时思考轨迹日志 -->
-        <div class="panel-card log-card">
-          <h2>🧠 实时探索与思考轨迹</h2>
-          <div class="log-terminal" id="logTerminal">
-            <div class="log-line info">等待任务启动...</div>
-          </div>
-        </div>
       </aside>
 
-      <!-- 右侧：成果展示与渲染视图 -->
       <section class="content-panel">
-        <div class="content-header">
-          <div class="tabs">
-            <button class="tab-btn active" data-target="articleTab">📄 正文渲染</button>
-            <button class="tab-btn" data-target="citationsTab">📚 参考文献 (<span id="citationCount">0</span>)</button>
-            <button class="tab-btn" data-target="rawTab">📑 Markdown 源码</button>
-          </div>
-          <div class="export-actions">
-            <button class="btn btn-sm btn-outline" id="exportTypstBtn">
-              <span class="btn-icon">📐</span> Typst 论文
-            </button>
-            <button class="btn btn-sm btn-outline" id="exportSlidesBtn">
-              <span class="btn-icon">📊</span> Marp 幻灯片
-            </button>
-            <button class="btn btn-sm btn-outline" id="exportHtmlBtn">
-              <span class="btn-icon">🌐</span> 离线研报
-            </button>
-            <button class="btn btn-sm btn-outline" id="copyMdBtn">
-              <span class="btn-icon">📋</span> 复制 Markdown
-            </button>
-          </div>
-        </div>
-
-        <div class="content-body">
-          <div class="tab-pane active" id="articleTab">
-            <div class="article-render markdown-body" id="articleRender">
-              <div class="empty-state">
-                <div class="empty-icon">📝</div>
-                <h3>尚未生成研究成果</h3>
-                <p>在左侧输入研究主题并点击“启动深度研究”，全流程长文与证据链将在此实时呈现。</p>
+        <div class="studio-split">
+          <aside class="dialogue-rail" aria-label="研讨现场">
+            <div class="dialogue-header">
+              <h2>研讨现场</h2>
+              <p class="dialogue-sub">主持人调度 · 视角对谈</p>
+            </div>
+            <div class="dialogue-thread" id="dialogueThread"></div>
+          </aside>
+          <div class="article-column">
+            <div class="content-header">
+              <div class="tabs">
+                <button class="tab-btn active" data-target="articleTab" type="button">正文渲染</button>
+                <button class="tab-btn" data-target="citationsTab" type="button">参考文献 (<span id="citationCount">0</span>)</button>
+                <button class="tab-btn" data-target="rawTab" type="button">Markdown 源码</button>
+              </div>
+              <div class="export-actions">
+                <button class="btn btn-sm btn-outline" id="exportTypstBtn" type="button">Typst 论文</button>
+                <button class="btn btn-sm btn-outline" id="exportSlidesBtn" type="button">Marp 幻灯片</button>
+                <button class="btn btn-sm btn-outline" id="exportHtmlBtn" type="button">离线研报</button>
+                <button class="btn btn-sm btn-outline" id="copyMdBtn" type="button">复制 Markdown</button>
               </div>
             </div>
-          </div>
-
-          <div class="tab-pane" id="citationsTab">
-            <div class="citations-list" id="citationsList">
-              <div class="empty-state">暂无参考文献</div>
+            <div class="content-body">
+              <div class="tab-pane active" id="articleTab">
+                <div class="article-render markdown-body" id="articleRender">
+                  <div class="empty-state">
+                    <img class="empty-mark" src="/static/brand/suzhi-mark.svg" width="64" height="64" alt="">
+                    <h3>尚未生成研究成果</h3>
+                    <p>在左侧输入研究主题并启动深度研究。研讨现场的对谈会与正文并排展开。</p>
+                  </div>
+                </div>
+              </div>
+              <div class="tab-pane" id="citationsTab">
+                <div class="citations-list" id="citationsList">
+                  <div class="empty-state">暂无参考文献</div>
+                </div>
+              </div>
+              <div class="tab-pane" id="rawTab">
+                <textarea class="raw-markdown" id="rawMarkdown" readonly></textarea>
+              </div>
             </div>
-          </div>
-
-          <div class="tab-pane" id="rawTab">
-            <textarea class="raw-markdown" id="rawMarkdown" readonly></textarea>
           </div>
         </div>
       </section>
     </main>
 
-    <!-- ⚙️ 系统与模型配置抽屉模态框 -->
-    <div class="modal-overlay" id="settingsModal">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h2>⚙️ STORM 系统配置与 Provider 中心</h2>
-          <button class="close-btn" id="closeSettingsBtn">&times;</button>
-        </div>
-        <div class="modal-body">
-          <!-- 活跃厂商切换 -->
-          <div class="config-section">
-            <h3>🤖 大模型 (LLM) 配置</h3>
-            <div class="form-row">
-              <label>活跃 LLM 提供商</label>
-              <select id="activeLlmSelect"></select>
-            </div>
-            <div class="form-row">
-              <label>API 端点 (Base URL)</label>
-              <input type="text" id="llmBaseUrlInput">
-            </div>
-            <div class="form-row">
-              <label>API Key (密钥)</label>
-              <div class="key-input-wrapper">
-                <input type="password" id="llmApiKeyInput" placeholder="输入新密钥（留空保持当前配置）">
-                <button class="btn btn-sm btn-outline" id="toggleKeyVisibility">👁️</button>
-              </div>
-            </div>
-            <div class="form-row">
-              <label>当前模型</label>
-              <div class="model-select-wrapper">
-                <input type="text" id="llmModelInput" placeholder="例如: deepseek-chat">
-                <button class="btn btn-sm btn-outline" id="probeLlmBtn">⚡ 探测并拉取模型</button>
-              </div>
-              <div class="probe-result" id="llmProbeResult"></div>
-            </div>
-          </div>
+    <footer class="app-footer">
+      <img class="lab-mark" src="/static/brand/luxi-lab-main.svg" width="28" height="28" alt="鹿溪联合创新实验室">
+      <div class="footer-copy">
+        <span>出品：鹿溪联合创新实验室（LUXI Joint Innovation Lab）</span>
+        <span class="footer-sep">·</span>
+        <span>溯知 · SuZhi</span>
+        <span class="footer-sep">·</span>
+        <span>引擎代号 STORM</span>
+      </div>
+    </footer>
+  </div>
 
-          <div class="config-section">
-            <h3>🔍 检索引擎配置</h3>
-            <div class="form-row">
-              <label>活跃检索引擎</label>
-              <select id="activeSearchSelect"></select>
-            </div>
-            <div class="form-row">
-              <label>SearXNG API 地址</label>
-              <input type="text" id="searchApiUrlInput">
-            </div>
-            <div class="form-row">
-              <label>并发信号量上限</label>
-              <input type="number" id="searchMaxConcurrentInput" value="15">
-            </div>
-            <div class="form-row">
-              <button class="btn btn-sm btn-outline" id="probeSearchBtn">⚡ 探测检索连通性</button>
-              <div class="probe-result" id="searchProbeResult"></div>
+  <div class="modal-overlay" id="settingsModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>系统配置与 Provider 中心</h2>
+        <button class="close-btn" id="closeSettingsBtn" type="button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="config-section">
+          <h3>大模型（LLM）配置</h3>
+          <div class="form-row">
+            <label>活跃 LLM 提供商</label>
+            <select id="activeLlmSelect"></select>
+          </div>
+          <div class="form-row">
+            <label>API 端点（Base URL）</label>
+            <input type="text" id="llmBaseUrlInput">
+          </div>
+          <div class="form-row">
+            <label>API Key（密钥）</label>
+            <div class="key-input-wrapper">
+              <input type="password" id="llmApiKeyInput" placeholder="输入新密钥（留空保持当前配置）">
+              <button class="btn btn-sm btn-outline" id="toggleKeyVisibility" type="button">显示</button>
             </div>
           </div>
+          <div class="form-row">
+            <label>当前模型</label>
+            <div class="model-select-wrapper">
+              <input type="text" id="llmModelInput" placeholder="例如: deepseek-chat">
+              <button class="btn btn-sm btn-outline" id="probeLlmBtn" type="button">探测并拉取模型</button>
+            </div>
+            <div class="probe-result" id="llmProbeResult"></div>
+          </div>
         </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" id="cancelSettingsBtn">取消</button>
-          <button class="btn btn-primary" id="saveSettingsBtn">💾 保存并应用配置</button>
+
+        <div class="config-section">
+          <h3>检索引擎配置</h3>
+          <div class="form-row">
+            <label>活跃检索引擎</label>
+            <select id="activeSearchSelect"></select>
+          </div>
+          <div class="form-row">
+            <label>SearXNG API 地址</label>
+            <input type="text" id="searchApiUrlInput">
+          </div>
+          <div class="form-row">
+            <label>并发信号量上限</label>
+            <input type="number" id="searchMaxConcurrentInput" value="15">
+          </div>
+          <div class="form-row">
+            <button class="btn btn-sm btn-outline" id="probeSearchBtn" type="button">探测检索连通性</button>
+            <div class="probe-result" id="searchProbeResult"></div>
+          </div>
         </div>
       </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="cancelSettingsBtn" type="button">取消</button>
+        <button class="btn btn-primary" id="saveSettingsBtn" type="button">保存并应用配置</button>
+      </div>
     </div>
+  </div>
 
-    <!-- 📁 研究任务管理抽屉模态框 -->
-    <div class="modal-overlay" id="tasksModal">
-      <div class="modal-card modal-lg">
-        <div class="modal-header">
-          <h2>📁 STORM 研究任务中心</h2>
-          <div class="header-tools">
-            <button class="btn btn-sm btn-outline" id="refreshTasksBtn">🔄 刷新列表</button>
-            <button class="close-btn" id="closeTasksBtn">&times;</button>
-          </div>
+  <div class="modal-overlay" id="tasksModal">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2>研究任务中心</h2>
+        <div class="header-tools">
+          <button class="btn btn-sm btn-outline" id="refreshTasksBtn" type="button">刷新列表</button>
+          <button class="close-btn" id="closeTasksBtn" type="button">&times;</button>
         </div>
-        <div class="modal-body">
-          <div class="tasks-container" id="tasksContainer">
-            <div class="empty-state">正在加载任务列表...</div>
-          </div>
+      </div>
+      <div class="modal-body">
+        <div class="compare-bar">
+          <select id="compareLeft" aria-label="对比左侧任务"></select>
+          <select id="compareRight" aria-label="对比右侧任务"></select>
+          <button class="btn btn-sm btn-outline" id="compareTasksBtn" type="button">复跑对比</button>
+        </div>
+        <pre class="compare-diff" id="compareDiff" hidden></pre>
+        <div class="tasks-container" id="tasksContainer">
+          <div class="empty-state">正在加载任务列表...</div>
         </div>
       </div>
     </div>
   </div>
 
-  <script src="/static/app.js?v=2.4.0"></script>
+  <div class="modal-overlay" id="knowledgeModal">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2>本地知识资产</h2>
+        <button class="close-btn" id="closeKnowledgeBtn" type="button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="dialogue-sub">已完成课题回流到本机 SQLite，可供后续冷启动。不上传外网。</p>
+        <div class="tasks-container" id="knowledgeContainer">
+          <div class="empty-state">正在加载...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="aboutModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>关于溯知</h2>
+        <button class="close-btn" id="closeAboutBtn" type="button">&times;</button>
+      </div>
+      <div class="modal-body about-body">
+        <img class="about-mark" src="/static/brand/suzhi-mark.svg" width="72" height="72" alt="溯知">
+        <h3>溯知 · SuZhi</h3>
+        <p class="about-slogan">溯流求源，知汇成章</p>
+        <p>深度知识策展与学术长文生成系统。以多视角检索、事实图谱与递归探索，把散落信源溯流成章，并导出 IEEE/ACM 论文、幻灯片与离线研报。</p>
+        <p>出品：鹿溪联合创新实验室（LUXI Joint Innovation Lab）</p>
+        <p>矩阵：工坊·一法（专业工程 · 知识策展）</p>
+        <p>引擎代号：STORM。自研异步内核、Web 控制台与出版管线为实验室原创；上游方法学参考 Stanford STORM（MIT 许可）。</p>
+        <img class="about-lab" src="/static/brand/luxi-lab-main.svg" width="120" height="120" alt="鹿溪联合创新实验室">
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=3.4.0"></script>
 </body>
 </html>

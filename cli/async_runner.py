@@ -28,26 +28,42 @@ from knowledge_storm.async_core import (
 
 
 def load_config():
-    """从 StormConfig 或环境变量加载配置。"""
-    config = {}
+    """与 Web 共用 ConfigHub；失败时回退环境变量。"""
     try:
-        from cli.config_manager import StormConfig
-        cfg_mgr = StormConfig()
-        config["llm"] = cfg_mgr.get_llm_config()
-        config["search"] = cfg_mgr.get_retriever_config()
+        from knowledge_storm.async_core import ConfigHub
+        hub = ConfigHub()
+        llm = hub.get_active_llm()
+        search = hub.get_active_search()
+        return {
+            "llm": {
+                "api_key": llm.api_key,
+                "api_base": llm.base_url,
+                "model": llm.model,
+            },
+            "search": {
+                "params": {
+                    "searxng_api_url": search.api_url,
+                    "searxng_api_key": search.api_key,
+                    "engines_academic": search.engines_academic,
+                    "engines_chinese": search.engines_chinese,
+                    "engines_general": search.engines_general,
+                }
+            },
+        }
     except Exception:
-        config["llm"] = {
-            "api_key": os.environ.get("DEEPSEEK_API_KEY", os.environ.get("OPENAI_API_KEY", "")),
-            "api_base": os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
-            "model": "deepseek-chat",
+        return {
+            "llm": {
+                "api_key": os.environ.get("DEEPSEEK_API_KEY", os.environ.get("OPENAI_API_KEY", "")),
+                "api_base": os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
+                "model": "deepseek-chat",
+            },
+            "search": {
+                "params": {
+                    "searxng_api_url": os.environ.get("SEARXNG_API_URL", "https://search.nunch.uk/search"),
+                    "searxng_api_key": "",
+                }
+            },
         }
-        config["search"] = {
-            "params": {
-                "searxng_api_url": "https://search.nunch.uk/search",
-                "searxng_api_key": "",
-            }
-        }
-    return config
 
 
 async def main_async():
@@ -57,7 +73,12 @@ async def main_async():
     parser.add_argument("--output-dir", type=str, default="./results_async", help="输出目录")
     parser.add_argument("--turns", type=int, default=3, help="专家对话轮数（非 deep 模式）")
     parser.add_argument("--perspectives", type=int, default=3, help="研究视角数量")
-    parser.add_argument("--deep-research", action="store_true", default=True, help="启用动态递归探索树 (Tree-of-Thoughts 深度下钻)")
+    parser.add_argument(
+        "--deep-research",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="启用动态递归探索树（--no-deep-research 关闭）",
+    )
     parser.add_argument("--max-depth", type=int, default=2, help="深度研究最大递归层级")
     parser.add_argument("--local-docs-dir", type=str, default=None, help="挂载本地知识库目录进行混合检索 (BM25+RRF)")
 
@@ -151,11 +172,16 @@ async def main_async():
     print(f"🌲 深度研究模式: {'开启 (Max Depth: ' + str(args.max_depth) + ')' if args.deep_research else '关闭'}")
     print("=" * 60)
 
-    article = await pipeline.run(
-        topic=args.topic,
-        task_id=args.resume,
-        progress_callback=progress_callback,
-    )
+    try:
+        article = await pipeline.run(
+            topic=args.topic,
+            task_id=args.resume,
+            progress_callback=progress_callback,
+        )
+    finally:
+        await llm.close()
+        if hasattr(retriever, "close"):
+            await retriever.close()
 
     print("\n" + "=" * 60)
     print(f"📁 成果输出目录: {pipeline.output_dir}")

@@ -1,3 +1,7 @@
+# STORM Minimal User Interface（上游遗留 · 非溯知入口）
+
+> **废弃。** 溯知 · SuZhi 请使用 `python3 -m server.app`（需先 `source .venv/bin/activate`）。本 Streamlit 界面依赖 Stanford `STORMWikiRunner` / DSPy，不在 V1.0 交付范围。
+
 # STORM Minimal User Interface
 
 This is a minimal user interface for `STORMWikiRunner` which includes the following features:
