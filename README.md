@@ -92,8 +92,8 @@ flowchart TD
 无需 GPU。请使用虚拟环境，系统自带的 `python3` **不会**自动带上 FastAPI。
 
 ```bash
-git clone https://github.com/itrilogy/llm_storm.git
-cd llm_storm
+git clone https://github.com/itrilogy/LUCY-SUZHI.git
+cd LUCY-SUZHI
 
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
