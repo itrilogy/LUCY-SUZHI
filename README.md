@@ -1,18 +1,33 @@
-# 溯知 · SuZhi
+<div align="center">
+  <img src="frontend/web/brand/suzhi-mark.svg" width="64" height="64" alt="溯知 · SuZhi 产品标" />
+  &nbsp;&nbsp;
+  <img src="frontend/web/brand/luxi-lab-main.svg" width="64" height="64" alt="鹿溪联合创新实验室 LUXI LAB" />
+</div>
 
-**溯流求源，知汇成章。**
+<h1 align="center">溯知 · SuZhi（STORM）</h1>
+
+<p align="center">
+  <strong>溯流求源，知汇成章</strong><br/>
+  <em>Trace the current to its source; knowledge gathers into writing.</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Matrix-工坊%C2%B7一法-0D5E42" alt="matrix" />
+  <img src="https://img.shields.io/badge/Product-溯知%20SuZhi-0D5E42" alt="product" />
+  <img src="https://img.shields.io/badge/Lab-鹿溪联合创新实验室-047538" alt="lab" />
+  <img src="https://img.shields.io/badge/Based%20on-Stanford%20STORM-6366f1" alt="upstream" />
+  <img src="https://img.shields.io/badge/Stack-Python%203.10%2B%20%7C%20FastAPI%20%7C%20HTTPX-green" alt="stack" />
+  <img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="license" />
+</p>
+
+<p align="center">
+  <b>鹿溪联合创新实验室</b>（LUXI Joint Innovation Lab）出品 · 矩阵：工坊·一法<br/>
+  仓库：<a href="https://github.com/itrilogy/LUCY-SUZHI">itrilogy/LUCY-SUZHI</a>
+</p>
+
+---
 
 溯知（英文 **SuZhi**，引擎代号 **STORM**）是鹿溪联合创新实验室出品的深度知识策展与学术长文生成系统：多视角检索、事实图谱、递归探索，把散落信源写成可引用的长文，并导出论文、幻灯片与离线研报。
-
-<div align="center">
-
-![License](https://img.shields.io/badge/License-MIT%20(upstream)-blue.svg)
-![Python](https://img.shields.io/badge/Python-3.10%2B-green.svg)
-![Brand](https://img.shields.io/badge/LUXI%20Lab-溯知-0D5E42.svg)
-
-出品：鹿溪联合创新实验室（LUXI Joint Innovation Lab） · 矩阵：工坊·一法
-
-</div>
 
 > 自研主路径：`knowledge_storm/async_core/` + `server/` + `frontend/web/` + `cli/`。  
 > 上游 Stanford STORM 位于 `knowledge_storm/storm_wiki/` 等目录，MIT 许可，**不是**本产品的运行入口。  
@@ -20,7 +35,7 @@
 
 ---
 
-## STORM 引擎能力（自研异步内核）
+## 🎯 STORM 引擎能力（自研异步内核）
 
 **STORM (Synthesis of Topic Outlines & Research Material)** 在本仓库中指溯知的技术引擎：生产级、全配置驱动、纯异步轻量化、支持深度递归探索的自动化知识策展与学术长文出版管线。
 
@@ -73,7 +88,7 @@ flowchart TD
 3. **🔍 多源混合检索与 RRF 融合 (Hybrid Search & RRF)**：
    * 本地语料库（Markdown/PDF/代码）BM25 词频索引与外部网络检索融合，基于 **RRF (Reciprocal Rank Fusion)** 倒数排名算法高精度打分重排。
 4. **⚖️ 事实图谱与多信源冲突裁决 (Fact Graph & Discrepancy Matrix)**：
-   * 提取实体-关系图谱，自动比对跨信源数据差异并生成“信源分歧对比表格”直接嵌入正文。
+   * 提取实体-关系图谱，自动比对跨信源数据差异并生成"信源分歧对比表格"直接嵌入正文。
 5. **📊 多模态图表与数据绘图 (Mermaid & Native SVG)**：
    * 自动解析章节核心机制生成合法的 Mermaid 流程/时序图；原生渲染纯 SVG 矢量柱状对比图。
 6. **🎯 学术红蓝对抗评审与反思修正 (Academic Review & Reflexion)**：
@@ -138,7 +153,7 @@ searxng.engines_general = "google,bing,duckduckgo"
 ```
 
 ### 方式 3：Web 控制台可视化配置（免命令行编辑）
-启动 Web 服务后，在界面点击右上角 **“⚙️ 系统与模型配置”**，支持界内切换厂商、点击 **“⚡ 探测并拉取模型”** 测算延迟并一键保存热重载。
+启动 Web 服务后，在界面点击右上角 **"⚙️ 系统与模型配置"**，支持界内切换厂商、点击 **"⚡ 探测并拉取模型"** 测算延迟并一键保存热重载。
 
 ---
 
@@ -273,6 +288,25 @@ python tests/test_full_pipeline_e2e.py
 
 ---
 
+## 🎨 品牌标识
+
+| 标识 | 预览 | 说明 | 源文件 |
+| :---: | :---: | :--- | :--- |
+| **产品方标** | <img src="frontend/web/brand/suzhi-mark.svg" width="32" height="32" alt="溯知" /> | 三信源汇流 + 成文章页（鹿溪绿底） | `frontend/web/brand/suzhi-mark.svg` |
+| **产品字锁** | [`frontend/web/brand/logo.svg`](frontend/web/brand/logo.svg) | 横版产品字锁 | `frontend/web/brand/logo.svg` |
+| **实验室主标** | <img src="frontend/web/brand/luxi-lab-main.svg" width="32" height="32" alt="LUXI LAB" /> | 官方 LUXI LAB | `frontend/web/brand/luxi-lab-main.svg` |
+
+**色板（LUXI CI）**
+
+| Token | 色值 | 用途 |
+| :--- | :--- | :--- |
+| 鹿溪绿 | `#0D5E42` | 主色 / 图标底板 |
+| 源启白 | `#F5F7FA` | 浅色背景 / 反白 |
+| 进化蓝 | `#00D2FF` | 溪流 / 数据高亮 |
+| 标题金 | `#F1C40F` | 落点 / 显著信号 |
+
+---
+
 ## 📑 素材库与深度技术文档索引 (Knowledge Assets)
 
 详尽的技术报告与架构演进指南已持久化归档于 `素材/` 目录中：
@@ -339,3 +373,12 @@ python tests/test_full_pipeline_e2e.py
 ## 📄 开源许可证 (License)
 
 本项目采用 **Apache 2.0 开源许可证**。详见 [LICENSE](LICENSE) 文件。
+
+---
+
+<div align="center">
+  <img src="frontend/web/brand/luxi-lab-main.svg" width="48" height="48" alt="LUXI LAB" />
+  <p><strong>溯知 · SuZhi</strong> · 溯流求源，知汇成章</p>
+  <p>© 鹿溪联合创新实验室 · LUXI Joint Innovation Lab</p>
+  <p><em>林深见鹿，源启清溪 · Deep Insights, Evolutionary Origin.</em></p>
+</div>
